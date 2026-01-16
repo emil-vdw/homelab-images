@@ -5,42 +5,51 @@ log() { printf '%s\n' "$*"; }
 die() { log "error: $*"; exit 1; }
 
 # Required env vars
-: "${TARGET:?set TARGET (e.g. /data)}"
+: "${TARGET:?set TARGET (single dir or comma-separated list, e.g. /data or /config,/data)}"
 : "${WANT_UID:?set WANT_UID (e.g. 10001)}"
 : "${WANT_GID:?set WANT_GID (e.g. 10001)}"
 : "${WANT_MODE:?set WANT_MODE (octal, e.g. 2775)}"
 
-# Basic validation (numeric / octal-ish)
+# Basic validation
 case "$WANT_UID" in (''|*[!0-9]*) die "WANT_UID must be numeric (got: $WANT_UID)";; esac
 case "$WANT_GID" in (''|*[!0-9]*) die "WANT_GID must be numeric (got: $WANT_GID)";; esac
-case "$WANT_MODE" in
-  (''|*[!0-7]*) die "WANT_MODE must be octal digits only (e.g. 2775) (got: $WANT_MODE)";;
-esac
+case "$WANT_MODE" in (''|*[!0-7]*) die "WANT_MODE must be octal digits only (e.g. 2775) (got: $WANT_MODE)";; esac
 
-[ -d "$TARGET" ] || die "TARGET is not a directory or not accessible: $TARGET"
+# Iterate TARGET as either a single path or comma-separated list.
+# Note: no spaces supported; keep it simple and explicit.
+OLD_IFS="$IFS"
+IFS=','
 
-have_uid="$(stat -c '%u' "$TARGET")"
-have_gid="$(stat -c '%g' "$TARGET")"
-have_mode="$(stat -c '%a' "$TARGET")"
+for path in $TARGET; do
+  # Restore default IFS behavior within the loop for safety
+  IFS="$OLD_IFS"
 
-log "perm-check: path=$TARGET have_uid=$have_uid have_gid=$have_gid have_mode=$have_mode want_uid=$WANT_UID want_gid=$WANT_GID want_mode=$WANT_MODE"
+  [ -n "$path" ] || die "empty path in TARGET list"
+  [ -d "$path" ] || die "TARGET path is not a directory or not accessible: $path"
 
-need_fix=0
-[ "$have_uid" -ne "$WANT_UID" ] && need_fix=1
-[ "$have_gid" -ne "$WANT_GID" ] && need_fix=1
-[ "$have_mode" != "$WANT_MODE" ] && need_fix=1
+  have_uid="$(stat -c '%u' "$path")"
+  have_gid="$(stat -c '%g' "$path")"
+  have_mode="$(stat -c '%a' "$path")"
 
-if [ "$need_fix" -eq 0 ]; then
-  log "perm-set: base dir already correct; skipping"
-  exit 0
-fi
+  log "perm-check: path=$path have_uid=$have_uid have_gid=$have_gid have_mode=$have_mode want_uid=$WANT_UID want_gid=$WANT_GID want_mode=$WANT_MODE"
 
-log "perm-set: base dir mismatch; applying recursive ownership + directory chmod..."
+  need_fix=0
+  [ "$have_uid" -ne "$WANT_UID" ] && need_fix=1
+  [ "$have_gid" -ne "$WANT_GID" ] && need_fix=1
+  [ "$have_mode" != "$WANT_MODE" ] && need_fix=1
 
-# Ownership: recursive (can be slow on large trees / NFS)
-chown -R "${WANT_UID}:${WANT_GID}" "$TARGET"
+  if [ "$need_fix" -eq 1 ]; then
+    log "perm-fix: base dir mismatch; applying recursive ownership + directory chmod..."
+    chown -R "${WANT_UID}:${WANT_GID}" "$path"
+    find "$path" -type d -exec chmod "$WANT_MODE" {} +
+    log "perm-fix: done: $path"
+  else
+    log "perm-fix: base dir already correct; skipping: $path"
+  fi
 
-# enforce desired mode
-chmod "$WANT_MODE" "$TARGET"
+  # Re-set IFS to comma for the next iteration
+  IFS=','
+done
 
-log "perm-set: done"
+# Restore original IFS
+IFS="$OLD_IFS"
