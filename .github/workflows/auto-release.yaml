@@ -5,8 +5,8 @@ on:
     branches: ["main"]
     paths:
       - "images/**"
-      - ".github/workflows/auto-release.yml"
-      - ".github/workflows/publish-ghcr.yml"
+      - ".github/workflows/auto-release.yaml"
+      - ".github/workflows/publish-ghcr.yaml"
   workflow_dispatch: {}
 
 permissions:
@@ -15,10 +15,6 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    outputs:
-      release_tag: ${{ steps.tag.outputs.release_tag }}
-      changed: ${{ steps.changed.outputs.changed }}
-      changed_images: ${{ steps.changed.outputs.changed_images }}
 
     steps:
       - name: Checkout
@@ -50,23 +46,25 @@ jobs:
           fi
 
           # Filter to only dirs that actually have a Dockerfile
-          IMAGES=""
+          IMAGES=()
           while IFS= read -r img; do
             [[ -z "$img" ]] && continue
             [[ -f "images/$img/Dockerfile" ]] || continue
-            IMAGES+="$img "
+            IMAGES+=("$img")
           done <<< "${CHANGED}"
 
-          IMAGES="$(echo "$IMAGES" | xargs || true)"
-
-          if [[ -z "$IMAGES" ]]; then
+          if [[ ${#IMAGES[@]} -eq 0 ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "changed_images=" >> "$GITHUB_OUTPUT"
+            echo "images=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "changed_images=$IMAGES" >> "$GITHUB_OUTPUT"
+          {
+            echo "changed=true"
+            echo "images<<EOF"
+            printf '%s\n' "${IMAGES[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Compute CalVer release tag
         id: tag
@@ -76,7 +74,6 @@ jobs:
           set -euo pipefail
           CALVER="$(date -u +'%Y%m%d.%H%M%S')-${GITHUB_SHA::7}"
           echo "release_tag=$CALVER" >> "$GITHUB_OUTPUT"
-          echo "Release tag will be: $CALVER"
 
       - name: Create Git tag + GitHub Release
         if: ${{ steps.changed.outputs.changed == 'true' }}
@@ -87,7 +84,19 @@ jobs:
           set -euo pipefail
 
           TAG="${{ steps.tag.outputs.release_tag }}"
-          IMAGES="${{ steps.changed.outputs.changed_images }}"
+
+          NOTES_FILE="$(mktemp)"
+          {
+            echo "Automated CalVer release."
+            echo
+            echo "Changed images:"
+            while IFS= read -r img; do
+              [[ -z "$img" ]] && continue
+              echo "- $img"
+            done <<< "${{ steps.changed.outputs.images }}"
+            echo
+            echo "Commit: $GITHUB_SHA"
+          } > "$NOTES_FILE"
 
           # Create an annotated git tag and push it
           git config user.name "github-actions[bot]"
@@ -95,12 +104,7 @@ jobs:
           git tag -a "$TAG" -m "CalVer release $TAG"
           git push origin "$TAG"
 
-          # Create a GitHub Release (notes are simple + include changed images)
+          # Create a GitHub Release
           gh release create "$TAG" \
             --title "Release $TAG" \
-            --notes "Automated CalVer release.
-
-Changed images:
-- ${IMAGES// /$'\n- '}
-
-Commit: $GITHUB_SHA"
+            --notes-file "$NOTES_FILE"
