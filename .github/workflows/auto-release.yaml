@@ -1,0 +1,106 @@
+name: Auto Release (CalVer)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "images/**"
+      - ".github/workflows/auto-release.yml"
+      - ".github/workflows/publish-ghcr.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+      changed: ${{ steps.changed.outputs.changed }}
+      changed_images: ${{ steps.changed.outputs.changed_images }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed images
+        id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          # Handle first push / force-push edge cases
+          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            BEFORE="$(git rev-parse "${AFTER}^" 2>/dev/null || true)"
+          fi
+
+          if [[ -z "$BEFORE" ]]; then
+            # If we can't determine a diff base, assume all images changed
+            CHANGED=$(find images -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -u)
+          else
+            CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- 'images/**' \
+              | awk -F/ 'NF>=2 {print $2}' \
+              | sort -u)
+          fi
+
+          # Filter to only dirs that actually have a Dockerfile
+          IMAGES=""
+          while IFS= read -r img; do
+            [[ -z "$img" ]] && continue
+            [[ -f "images/$img/Dockerfile" ]] || continue
+            IMAGES+="$img "
+          done <<< "${CHANGED}"
+
+          IMAGES="$(echo "$IMAGES" | xargs || true)"
+
+          if [[ -z "$IMAGES" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "changed_images=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "changed_images=$IMAGES" >> "$GITHUB_OUTPUT"
+
+      - name: Compute CalVer release tag
+        id: tag
+        if: ${{ steps.changed.outputs.changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          CALVER="$(date -u +'%Y%m%d.%H%M%S')-${GITHUB_SHA::7}"
+          echo "release_tag=$CALVER" >> "$GITHUB_OUTPUT"
+          echo "Release tag will be: $CALVER"
+
+      - name: Create Git tag + GitHub Release
+        if: ${{ steps.changed.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.tag.outputs.release_tag }}"
+          IMAGES="${{ steps.changed.outputs.changed_images }}"
+
+          # Create an annotated git tag and push it
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "CalVer release $TAG"
+          git push origin "$TAG"
+
+          # Create a GitHub Release (notes are simple + include changed images)
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes "Automated CalVer release.
+
+Changed images:
+- ${IMAGES// /$'\n- '}
+
+Commit: $GITHUB_SHA"
