@@ -40,7 +40,7 @@ log "perm-set: base dir mismatch; applying recursive ownership + directory chmod
 # Ownership: recursive (can be slow on large trees / NFS)
 chown -R "${WANT_UID}:${WANT_GID}" "$TARGET"
 
-# enforce desired mode
+# Enforce desired mode
 chmod "$WANT_MODE" "$TARGET"
 
 log "perm-set: done"
