@@ -4,7 +4,7 @@ FROM alpine:3.22.2
 RUN apk add --no-cache rsync ca-certificates openssh-client \
     && update-ca-certificates
 
-RUN addgroup -S rsync && adduser -s -G rsync
+RUN adduser -s -G rsync
 
 WORKDIR /app
 
