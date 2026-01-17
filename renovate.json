@@ -1,9 +1,9 @@
 {
-  "extends": ["config:recommended"],
+  "extends": ["config:recommended", "docker:pinDigests"],
   "enabledManagers": ["dockerfile", "github-actions"],
   "timezone": "Europe/Amsterdam",
-  "prHourlyLimit": 20,
-  "prConcurrentLimit": 5,
+  "prHourlyLimit": 10,
+  "prConcurrentLimit": 10,
   "automerge": true,
   "automergeType": "pr",
   "platformAutomerge": true,
@@ -11,7 +11,15 @@
   "packageRules": [
     {
       "matchManagers": ["dockerfile"],
-      "groupName": "Docker base images"
+      "matchUpdateTypes": ["minor", "patch", "major"],
+      "groupName": "Docker base images",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["pinDigest", "digest"],
+      "groupName": "Docker digests"
     },
     {
       "matchManagers": ["github-actions"],
