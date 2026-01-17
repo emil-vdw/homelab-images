@@ -1,0 +1,31 @@
+#+TITLE: homelab-images
+
+Simple container images for homelab tasks.
+
+* Images
+
+** rsync
+Example:
+#+begin_src sh
+docker run --rm homelab/rsync --version
+#+end_src
+
+** volume-permission-setter
+- Purpose: ensure one or more directories have the requested uid/gid/mode
+
+Required env vars:
+- =TARGET=: single dir or comma-separated list (e.g. =/data= or =/config,/data=)
+- =WANT_UID=: numeric uid (e.g. =10001=)
+- =WANT_GID=: numeric gid (e.g. =10001=)
+- =WANT_MODE=: octal directory mode (e.g. =2775=)
+
+example:
+#+begin_src sh
+docker run --rm \
+  -e TARGET=/data \
+  -e WANT_UID=10001 \
+  -e WANT_GID=10001 \
+  -e WANT_MODE=2775 \
+  -v /srv/data:/data \
+  homelab/volume-permission-setter
+#+end_src
