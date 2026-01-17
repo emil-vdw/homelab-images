@@ -15,12 +15,8 @@ case "$WANT_UID" in (''|*[!0-9]*) die "WANT_UID must be numeric (got: $WANT_UID)
 case "$WANT_GID" in (''|*[!0-9]*) die "WANT_GID must be numeric (got: $WANT_GID)";; esac
 case "$WANT_MODE" in (''|*[!0-7]*) die "WANT_MODE must be octal digits only (e.g. 2775) (got: $WANT_MODE)";; esac
 
-# Iterate TARGET as either a single path or comma-separated list.
-# Note: no spaces supported; keep it simple and explicit.
-OLD_IFS="$IFS"
-IFS=','
 
-for path in $TARGET; do
+for path in $(echo "$TARGET" | tr ',' ' '); do
   [ -n "$path" ] || die "empty path in TARGET list"
   [ -d "$path" ] || die "TARGET path is not a directory or not accessible: $path"
 
@@ -44,6 +40,3 @@ for path in $TARGET; do
     log "perm-fix: base dir already correct; skipping: $path"
   fi
 done
-
-# Restore original IFS
-IFS="$OLD_IFS"
