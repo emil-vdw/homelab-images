@@ -1,7 +1,6 @@
 {
   "extends": ["config:recommended", "docker:pinDigests"],
   "enabledManagers": ["dockerfile", "github-actions"],
-  "schedule": ["before 06:00 every day"],
   "timezone": "Europe/Amsterdam",
   "prHourlyLimit": 2,
   "prConcurrentLimit": 5,
