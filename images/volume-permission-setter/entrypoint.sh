@@ -21,9 +21,6 @@ OLD_IFS="$IFS"
 IFS=','
 
 for path in $TARGET; do
-  # Restore default IFS behavior within the loop for safety
-  IFS="$OLD_IFS"
-
   [ -n "$path" ] || die "empty path in TARGET list"
   [ -d "$path" ] || die "TARGET path is not a directory or not accessible: $path"
 
@@ -46,9 +43,6 @@ for path in $TARGET; do
   else
     log "perm-fix: base dir already correct; skipping: $path"
   fi
-
-  # Re-set IFS to comma for the next iteration
-  IFS=','
 done
 
 # Restore original IFS
