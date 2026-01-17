@@ -1,8 +1,8 @@
 {
-  "extends": ["config:recommended", "docker:pinDigests"],
+  "extends": ["config:recommended"],
   "enabledManagers": ["dockerfile", "github-actions"],
   "timezone": "Europe/Amsterdam",
-  "prHourlyLimit": 2,
+  "prHourlyLimit": 20,
   "prConcurrentLimit": 5,
   "automerge": true,
   "automergeType": "pr",
