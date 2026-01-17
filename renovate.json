@@ -12,9 +12,7 @@
     {
       "matchManagers": ["dockerfile"],
       "matchUpdateTypes": ["minor", "patch", "major"],
-      "groupName": "Docker base images",
-      "separateMajorMinor": false,
-      "separateMinorPatch": false
+      "groupName": "Docker base images"
     },
     {
       "matchManagers": ["dockerfile"],
