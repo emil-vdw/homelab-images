@@ -19,4 +19,4 @@ jobs:
           RENOVATE_AUTODISCOVER_FILTER: ${{ github.repository }}
         with:
           token: ${{ secrets.RENOVATE_TOKEN }}
-          configurationFile: .renovate.json
+          configurationFile: renovate.json
