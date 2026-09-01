@@ -29,3 +29,78 @@ docker run --rm \
   -v /srv/data:/data \
   homelab/volume-permission-setter
 #+end_src
+
+** claude-code
+- Purpose: run =claude remote-control= as a long-lived pod. Claude Code has
+  no headless mode - it always renders an Ink TUI, even when driven
+  remotely - so the entrypoint starts it inside a detached tmux session and
+  blocks until that session exits, restarting the pod if it does.
+- No required env vars. =DISABLE_AUTOUPDATER=1= is baked into the image.
+  Container args are the full command to run inside tmux (the image adds no
+  =claude= flags of its own).
+- Runs as uid/gid =20209=, home =/opt/data=. That directory is meant to be a
+  mounted volume, chowned to =20209= by the caller (e.g. a k8s initContainer)
+  before the container starts - the image itself does not chown it.
+- Attach to the running session with =kubectl exec -it <pod> -- tmux attach -t claude=.
+
+example:
+#+begin_src sh
+docker run --rm -it \
+  -v claude-data:/opt/data \
+  homelab/claude-code \
+  claude remote-control
+#+end_src
+
+** seerr-mcp
+- Purpose: run [[https://github.com/cyanheads/seerr-mcp-server][@cyanheads/seerr-mcp-server]] as an MCP HTTP server.
+  Bakes the npm package in at build time instead of installing it fresh on
+  every pod start.
+- Runs as uid/gid =20206=.
+
+Required env vars (all deployment-specific, left unset in the image):
+- =MCP_TRANSPORT_TYPE=: e.g. =http=
+- =MCP_HTTP_HOST=: e.g. =0.0.0.0=
+- =MCP_HTTP_PORT=: e.g. =3010=
+- =MCP_SESSION_MODE=: =stateful= (required for the confirmation round-trip
+  in =seerr_request_media= to work at all)
+- =LOGS_DIR=: a writable path (the default is a relative dir that fails
+  under a read-only root filesystem)
+- =SEERR_BASE_URL=: base URL of the Overseerr/Jellyseerr instance
+- =SEERR_API_KEY=: API key for that instance
+
+example:
+#+begin_src sh
+docker run --rm \
+  -e MCP_TRANSPORT_TYPE=http \
+  -e MCP_HTTP_HOST=0.0.0.0 \
+  -e MCP_HTTP_PORT=3010 \
+  -e MCP_SESSION_MODE=stateful \
+  -e LOGS_DIR=/tmp/logs \
+  -e SEERR_BASE_URL=http://seerr.example.internal \
+  -e SEERR_API_KEY=changeme \
+  -p 3010:3010 \
+  homelab/seerr-mcp
+#+end_src
+
+** truenas-mcp
+- Purpose: wrap the [[https://github.com/truenas/truenas-mcp][truenas-mcp]] stdio binary with
+  [[https://github.com/sparfenyuk/mcp-proxy][mcp-proxy]] and re-expose it as an HTTP/SSE MCP server. Bakes in both the
+  binary (fetched and sha256-verified at build time) and mcp-proxy, instead
+  of installing/downloading either on every pod start. mcp-proxy is pinned
+  to =0.12.0= with =mcp<2.0.0=, since mcp 2.x removed an internal module
+  that mcp-proxy 0.12.0 still imports.
+- *amd64 only* - upstream publishes no linux/arm64 release asset.
+- Runs as uid/gid =20208=.
+- =MCP_PROXY_HOST= / =MCP_PROXY_PORT= are optional overrides, default
+  =0.0.0.0:8080=. All other env vars are passed straight through to the
+  wrapped binary (=mcp-proxy --pass-environment=), e.g. =TRUENAS_URL=,
+  =TRUENAS_API_KEY=, =TRUENAS_TLS_CA=.
+
+example:
+#+begin_src sh
+docker run --rm \
+  -e TRUENAS_URL=truenas.example.internal \
+  -e TRUENAS_API_KEY=changeme \
+  -p 8080:8080 \
+  homelab/truenas-mcp
+#+end_src

@@ -60,7 +60,13 @@ jobs:
             [[ -f "images/$img/Dockerfile" ]] || continue
             if [[ $first -eq 0 ]]; then JSON+=','; fi
             first=0
-            JSON+='{"image":"'"$img"'","context":"images/'"$img"'","dockerfile":"images/'"$img"'/Dockerfile"}'
+            # Most images build for both platforms; an image whose
+            # buildx target can't (e.g. truenas-mcp, whose upstream binary
+            # has no linux/arm64 release) opts out via an optional
+            # `platforms` file instead of every image needing one.
+            PLATFORMS="linux/amd64,linux/arm64"
+            [[ -f "images/$img/platforms" ]] && PLATFORMS="$(tr -d '[:space:]' < "images/$img/platforms")"
+            JSON+='{"image":"'"$img"'","context":"images/'"$img"'","dockerfile":"images/'"$img"'/Dockerfile","platforms":"'"$PLATFORMS"'"}'
           done <<< "$CHANGED_DIRS"
           JSON+=']}'
           echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
@@ -94,7 +100,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms }}
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:${{ needs.build-matrix.outputs.calver }}
