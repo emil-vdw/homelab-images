@@ -14,19 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Fetched straight from the GitHub release and sha256-verified against the
-# value published in that release's checksums.txt, since upstream ships no
-# PyPI package or Docker image of its own. Guarded on TARGETARCH even
-# though the platforms file restricts this image to amd64-only builds -
-# fail loudly rather than silently fetch the wrong (nonexistent) asset if
-# that restriction is ever dropped by mistake.
+# Fetched straight from the GitHub release, since upstream ships no PyPI
+# package or Docker image of its own.
 #
-# renovate.json's custom regex manager bumps TRUENAS_MCP_VERSION on its
-# own, but it cannot know the new checksum - a version bump PR needs the
-# CHECKSUM value below updated by hand from that release's own
-# checksums.txt, or the build fails closed at the sha256sum -c step
-# (intentional: a stale checksum should break the build, not silently
-# pass).
+# The checksum is FETCHED from that release's checksums.txt at build time
+# rather than pinned here, matching images/claude-code/Dockerfile - see the
+# kubectl block there for the full reasoning and the trade being accepted.
+# Standard sha256sum format (hash, two spaces, filename).
+#
+# Guarded on TARGETARCH even though the platforms file restricts this image
+# to amd64-only builds - fail loudly rather than silently fetch the wrong
+# (nonexistent) asset if that restriction is ever dropped by mistake.
 ARG TARGETARCH
 RUN set -eu; \
     if [ "$TARGETARCH" != "amd64" ]; then \
@@ -34,13 +32,16 @@ RUN set -eu; \
       exit 1; \
     fi; \
     TRUENAS_MCP_VERSION=v0.0.6; \
-    CHECKSUM=920a1042763f2ed31937c5cf3072fbd2defdd863dbfb3e1078aeed0275f5fa1d; \
-    curl -fsSLo /tmp/truenas-mcp.tar.gz \
-      "https://github.com/truenas/truenas-mcp/releases/download/${TRUENAS_MCP_VERSION}/truenas-mcp-linux-amd64.tar.gz"; \
-    echo "${CHECKSUM}  /tmp/truenas-mcp.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/truenas-mcp.tar.gz -C /tmp; \
-    install -m 0755 /tmp/truenas-mcp-linux-amd64 /usr/local/bin/truenas-mcp; \
-    rm -f /tmp/truenas-mcp.tar.gz /tmp/truenas-mcp-linux-amd64
+    tarball="truenas-mcp-linux-amd64.tar.gz"; \
+    base="https://github.com/truenas/truenas-mcp/releases/download/${TRUENAS_MCP_VERSION}"; \
+    cd /tmp; \
+    curl -fsSLO "${base}/${tarball}"; \
+    curl -fsSLO "${base}/checksums.txt"; \
+    line="$(grep "  ${tarball}" checksums.txt)"; \
+    echo "${line}" | sha256sum -c -; \
+    tar -xzf "${tarball}"; \
+    install -m 0755 truenas-mcp-linux-amd64 /usr/local/bin/truenas-mcp; \
+    rm -f "${tarball}" checksums.txt truenas-mcp-linux-amd64
 
 # mcp-proxy's own dependency declaration is "mcp>=1.17.0" with no upper
 # bound, so an unpinned install pulls whatever is newest on the day this

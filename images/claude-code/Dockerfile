@@ -22,48 +22,54 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g @anthropic-ai/claude-code@2.1.252
 
 # kubectl, matched to the cluster's own k3s v1.35.7 rather than whatever a
-# distro package manager happens to carry. Downloaded per-arch and
-# sha256-verified against the checksum Kubernetes itself publishes next to
-# the binary, since this build is multi-platform (see
-# .github/workflows/publish-ghcr.yaml).
+# distro package manager happens to carry.
 #
-# renovate.json's custom regex manager bumps KUBECTL_VERSION on its own,
-# but it cannot know the new checksums - a version bump PR needs both
-# CHECKSUM values below updated by hand from the matching
-# https://dl.k8s.io/release/<version>/bin/linux/<arch>/kubectl.sha256
-# files, or the build fails closed at the sha256sum -c step (intentional:
-# a stale checksum should break the build, not silently pass).
+# The checksum is FETCHED at build time from the .sha256 Kubernetes
+# publishes next to the binary, not pinned as a constant here. That is a
+# deliberate trade: a pinned hash is reviewed by a human at pin time and
+# would catch an already-published artifact changing underneath us, but
+# Renovate cannot compute one (its regex manager only rewrites the version
+# string, and no datasource exposes an artifact sha256), so every version
+# bump would arrive as a red PR needing hand-edited hex. Fetching keeps the
+# verification meaningful against truncation and mirror corruption while
+# letting a bump be a one-line change. Note this trusts dl.k8s.io for both
+# the binary and its hash, which we already do for the binary itself.
+#
+# The .sha256 file is bare hex with no filename and no trailing newline,
+# unlike the sha256sum-format checksums.txt files the two other downloads
+# in this repo use.
 ARG TARGETARCH
 RUN set -eu; \
     KUBECTL_VERSION=v1.35.8; \
-    curl -fsSLo /usr/local/bin/kubectl \
-      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl"; \
-    case "$TARGETARCH" in \
-      amd64) CHECKSUM=874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf ;; \
-      arm64) CHECKSUM=cc749967b62f4422260bc9c0aa7a7c55f45175ae38cb8d95767b5d2b7e04c1fd ;; \
-      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    echo "${CHECKSUM}  /usr/local/bin/kubectl" | sha256sum -c -; \
-    chmod 0755 /usr/local/bin/kubectl
+    base="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}"; \
+    curl -fsSLo /tmp/kubectl "${base}/kubectl"; \
+    checksum="$(curl -fsSL "${base}/kubectl.sha256")"; \
+    echo "${checksum}  /tmp/kubectl" | sha256sum -c -; \
+    install -m 0755 /tmp/kubectl /usr/local/bin/kubectl; \
+    rm -f /tmp/kubectl
 
-# flux CLI, same reasoning and same source of truth as kubectl above: the
-# release tarball and flux2's own published checksums.txt, not an
-# unverified third-party repo. Same renovate.json caveat as kubectl above:
-# a FLUX_VERSION bump needs the two CHECKSUM values updated by hand from
-# that release's own checksums.txt.
+# flux CLI. Same fetch-at-build-time reasoning as kubectl above.
+#
+# The checksum asset is named flux_<version>_checksums.txt, NOT
+# checksums.txt - verified against the v2.9.5 release's asset list. It is
+# standard sha256sum format (hash, two spaces, filename), so the matching
+# line is fed to `sha256sum -c` directly. Capturing the grep into a
+# variable rather than piping it means a missing line fails the build here
+# instead of being masked by the pipeline's exit status.
 RUN set -eu; \
     FLUX_VERSION=v2.9.5; \
-    curl -fsSLo /tmp/flux.tar.gz \
-      "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_linux_${TARGETARCH}.tar.gz"; \
-    case "$TARGETARCH" in \
-      amd64) CHECKSUM=b853df82adfd7736f580692f9f734473d571606307139f8fd20c2a80dd1ff473 ;; \
-      arm64) CHECKSUM=f3e159af616ec0b9bd0a405c2185cf09d06b74652c1de3c7f377e8166826651a ;; \
-      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    echo "${CHECKSUM}  /tmp/flux.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/flux.tar.gz -C /usr/local/bin flux; \
+    v="${FLUX_VERSION#v}"; \
+    tarball="flux_${v}_linux_${TARGETARCH}.tar.gz"; \
+    sums="flux_${v}_checksums.txt"; \
+    base="https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}"; \
+    cd /tmp; \
+    curl -fsSLO "${base}/${tarball}"; \
+    curl -fsSLO "${base}/${sums}"; \
+    line="$(grep "  ${tarball}" "${sums}")"; \
+    echo "${line}" | sha256sum -c -; \
+    tar -xzf "${tarball}" -C /usr/local/bin flux; \
     chmod 0755 /usr/local/bin/flux; \
-    rm -f /tmp/flux.tar.gz
+    rm -f "${tarball}" "${sums}"
 
 # Claude Code otherwise checks npm for a newer release and rewrites its own
 # install on every start - undesirable here since the pinned version above
