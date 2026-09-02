@@ -54,6 +54,27 @@ RUN set -eu; \
 # their own constraint doesn't enforce it.
 RUN pip install --no-cache-dir "mcp-proxy==0.12.0" "mcp<2.0.0"
 
+# Investigated the two Python (not Go) Trivy findings on this image -
+# setuptools 70.3.0 (CVE-2025-47273) and msgpack 1.1.2
+# (GHSA-6v7p-g79w-8964) - on the assumption they'd be reachable from the
+# pip install above. They are not: `pip list` in this image has no
+# top-level setuptools or msgpack package at all. Both versions come from
+# pip's OWN vendored copies bundled inside pip itself (see
+# /usr/local/lib/python3.13/site-packages/pip/_vendor/vendor.txt and its
+# bom.cdx.json), and are present, byte-for-byte, in the untouched
+# python:3.13.15-slim-bookworm base image before this Dockerfile does
+# anything - confirmed by scanning the bare base image directly. pip
+# 26.2.1, what this base image ships, is also the current latest pip
+# release on PyPI, so there is no newer pip to pull in with patched
+# vendored copies either.
+# Tried `pip install --upgrade setuptools "msgpack>=1.2.1"` anyway (no
+# conflict with mcp-proxy/mcp - checked with `pip check`): it installs
+# real top-level packages alongside pip's vendored ones but cannot
+# override pip's internal, separately-namespaced copies, so it changed
+# nothing - rebuilt and rescanned, still 16/16 findings, 0 removed. Not
+# worth carrying dead packages that fix nothing, so left out. Both
+# findings are tracked as not-ours-to-fix in .trivyignore.
+
 # 20208: same UID/GID the hermes truenas-mcp deployment already forces via
 # securityContext.runAsUser (see docs/uid-gid.org in the main homelab
 # repo) - keeping it stable means no securityContext change needed for a
