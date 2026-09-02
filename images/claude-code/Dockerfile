@@ -38,8 +38,15 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.252
 # The .sha256 file is bare hex with no filename and no trailing newline,
 # unlike the sha256sum-format checksums.txt files the two other downloads
 # in this repo use.
+# TARGETARCH is normally supplied by BuildKit and needs no fallback there,
+# but a plain non-BuildKit `docker build` leaves it unset, and `set -u`
+# then turns every reference below into an unhelpful "TARGETARCH:
+# parameter not set" instead of just building for the host arch. Default
+# to amd64 (this repo's only real target today) so a local build works;
+# BuildKit's own supplied value still wins whenever it's actually set.
 ARG TARGETARCH
 RUN set -eu; \
+    : "${TARGETARCH:=amd64}"; \
     KUBECTL_VERSION=v1.35.8; \
     base="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}"; \
     curl -fsSLo /tmp/kubectl "${base}/kubectl"; \
@@ -57,6 +64,7 @@ RUN set -eu; \
 # variable rather than piping it means a missing line fails the build here
 # instead of being masked by the pipeline's exit status.
 RUN set -eu; \
+    : "${TARGETARCH:=amd64}"; \
     FLUX_VERSION=v2.9.5; \
     v="${FLUX_VERSION#v}"; \
     tarball="flux_${v}_linux_${TARGETARCH}.tar.gz"; \

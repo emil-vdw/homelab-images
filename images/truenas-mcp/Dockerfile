@@ -25,8 +25,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Guarded on TARGETARCH even though the platforms file restricts this image
 # to amd64-only builds - fail loudly rather than silently fetch the wrong
 # (nonexistent) asset if that restriction is ever dropped by mistake.
+#
+# TARGETARCH is normally supplied by BuildKit and needs no fallback there,
+# but a plain non-BuildKit `docker build` (as used for local verification
+# in this repo, since this machine's docker has no buildx plugin) leaves
+# it unset, and `set -u` then turns every reference into a hard-to-parse
+# "TARGETARCH: parameter not set" error instead of the guard below's
+# actual message. Defaulting to amd64 only fills that gap for a local,
+# single-arch build - it does not skip or weaken the guard itself: an
+# explicitly-passed non-amd64 value still overrides the default and still
+# fails the check.
 ARG TARGETARCH
 RUN set -eu; \
+    : "${TARGETARCH:=amd64}"; \
     if [ "$TARGETARCH" != "amd64" ]; then \
       echo "truenas-mcp has no linux-${TARGETARCH} release asset upstream - amd64 only" >&2; \
       exit 1; \
