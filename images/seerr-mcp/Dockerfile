@@ -1,6 +1,16 @@
 # syntax=docker/dockerfile:1.20@sha256:26147acbda4f14c5add9946e2fd2ed543fc402884fd75146bd342a7f6271dc1d
 FROM node:24.20.0-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf
 
+# `apk upgrade` before anything else pulls in whatever OS-package patches
+# Alpine has published to its apk repo since this base image was last
+# built - the base image itself lags those patches until it is rebuilt
+# and republished, which is why libcrypto3/libssl3 CVEs show up here even
+# though the base digest above is current. This doesn't cost any
+# reproducibility we didn't already give up: nothing in this file pins
+# apk package versions. See images/rsync/Dockerfile for the same fix
+# applied first and verified there.
+RUN apk --no-cache upgrade
+
 # Bakes in @cyanheads/seerr-mcp-server, which the hermes deployment
 # previously installed fresh via `npm install --prefix` on every pod
 # (re)start (see apps/hermes/seerr-mcp.yaml in the main homelab repo) -
