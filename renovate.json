@@ -10,10 +10,8 @@
   "timezone": "Europe/Amsterdam",
   "prHourlyLimit": 10,
   "prConcurrentLimit": 10,
-  "automerge": true,
   "automergeType": "pr",
   "platformAutomerge": true,
-  "ignoreTests": true,
   "packageRules": [
     {
       "matchManagers": [
@@ -21,10 +19,10 @@
       ],
       "matchUpdateTypes": [
         "minor",
-        "patch",
-        "major"
+        "patch"
       ],
-      "groupName": "Docker base images"
+      "groupName": "Docker base images",
+      "automerge": true
     },
     {
       "matchManagers": [
@@ -34,13 +32,19 @@
         "pinDigest",
         "digest"
       ],
-      "groupName": "Docker digests"
+      "groupName": "Docker digests",
+      "automerge": true
     },
     {
       "matchManagers": [
         "github-actions"
       ],
-      "groupName": "GitHub Actions"
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "GitHub Actions",
+      "automerge": true
     }
   ]
 }
