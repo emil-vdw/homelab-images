@@ -6,83 +6,524 @@ on:
     paths:
       - "images/**"
       - ".github/workflows/auto-release.yaml"
-      - ".github/workflows/publish-ghcr.yaml"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Full 40-character commit SHA on main to release"
+        required: true
+        type: string
 
 permissions:
   contents: write
   packages: write
 
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+# The manual entry point accepts a canonical SHA, so retries and push-triggered
+# runs for the same commit share one serialization boundary.
+concurrency:
+  group: release-${{ inputs.commit || github.sha }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  prepare:
     runs-on: ubuntu-latest
-    # Map step outputs to job outputs so the next job can see them
     outputs:
-      changed: ${{ steps.changed.outputs.changed }}
-      tag_name: ${{ steps.tag.outputs.release_tag }}
+      candidate-matrix: ${{ steps.prepare.outputs.candidate-matrix }}
+      has-images: ${{ steps.prepare.outputs.has-images }}
+      image-matrix: ${{ steps.prepare.outputs.image-matrix }}
+      release-tag: ${{ steps.prepare.outputs.release-tag }}
+      target-sha: ${{ steps.prepare.outputs.target-sha }}
     steps:
-      - name: Checkout
+      - name: Checkout target commit
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.commit || github.sha }}
 
-      - name: Detect changed images
-        id: changed
+      - name: Resolve release and image matrices
+        id: prepare
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SHA: ${{ inputs.commit || github.sha }}
         run: |
           set -euo pipefail
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
-          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-            BEFORE="$(git rev-parse "${AFTER}^" 2>/dev/null || true)"
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && ! "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Manual releases require a lowercase, full 40-character commit SHA." >&2
+            exit 1
           fi
-          if [[ -z "$BEFORE" ]]; then
-            CHANGED=$(find images -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -u)
+
+          target_sha="$(git rev-parse HEAD)"
+          if [[ "$target_sha" != "$REQUESTED_SHA" ]]; then
+            echo "Requested commit resolved to $target_sha instead of $REQUESTED_SHA." >&2
+            exit 1
+          fi
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if ! git merge-base --is-ancestor "$target_sha" origin/main; then
+              echo "Manual release commit $target_sha is not on main." >&2
+              exit 1
+            fi
+          fi
+
+          commit_epoch="$(git show -s --format=%ct "$target_sha")"
+          release_tag="$(date -u --date="@$commit_epoch" +'%Y%m%d.%H%M%S')-${target_sha:0:7}"
+
+          if git rev-parse --verify --quiet "refs/tags/$release_tag" >/dev/null; then
+            existing_sha="$(git rev-list -n 1 "$release_tag")"
+            if [[ "$existing_sha" != "$target_sha" ]]; then
+              echo "Release tag $release_tag already points to $existing_sha, not $target_sha." >&2
+              exit 1
+            fi
+          fi
+
+          previous_sha=""
+          previous_tag=""
+          while IFS= read -r tag; do
+            tag_sha="$(git rev-list -n 1 "$tag")"
+            if [[ "$tag_sha" != "$target_sha" ]] && git merge-base --is-ancestor "$tag_sha" "$target_sha"; then
+              previous_tag="$tag"
+              previous_sha="$tag_sha"
+              break
+            fi
+          done < <(git tag --list \
+            '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]-*' \
+            --sort=-version:refname)
+
+          declare -A selected=()
+          image_paths_changed=false
+
+          select_image() {
+            local image="$1"
+            if [[ ! "$image" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+              echo "Invalid image directory name: $image" >&2
+              exit 1
+            fi
+            [[ -f "images/$image/Dockerfile" ]] && selected["$image"]=1
+          }
+
+          select_all_images() {
+            while IFS= read -r -d '' directory; do
+              select_image "${directory##*/}"
+            done < <(find images -mindepth 1 -maxdepth 1 -type d -print0)
+          }
+
+          if [[ -z "$previous_sha" ]]; then
+            image_paths_changed=true
+            select_all_images
+            echo "No earlier successful release is an ancestor; selecting every image."
           else
-            CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- 'images/**' \
-              | awk -F/ 'NF>=2 {print $2}' \
-              | sort -u)
+            while IFS= read -r -d '' path; do
+              image_paths_changed=true
+              image="${path#images/}"
+              select_image "${image%%/*}"
+            done < <(git diff --name-only -z "$previous_sha" "$target_sha" -- images/)
+            echo "Selecting image changes since $previous_tag ($previous_sha)."
           fi
-          IMAGES=()
-          while IFS= read -r img; do
-            [[ -z "$img" ]] && continue
-            [[ -f "images/$img/Dockerfile" ]] || continue
-            IMAGES+=("$img")
-          done <<< "${CHANGED}"
-          if [[ ${#IMAGES[@]} -eq 0 ]]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            if [[ "$image_paths_changed" == "true" ]]; then
+              echo "Image paths changed, but the release matrix is empty." >&2
+              exit 1
+            fi
+            {
+              echo 'candidate-matrix={"include":[]}'
+              echo 'has-images=false'
+              echo 'image-matrix={"include":[]}'
+              echo "release-tag=$release_tag"
+              echo "target-sha=$target_sha"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          images="$({
+            for image in "${!selected[@]}"; do
+              printf '%s\n' "$image"
+            done
+          } | LC_ALL=C sort)"
+
+          image_matrix="$(printf '%s\n' "$images" | jq -Rsc '
+            split("\n")[:-1]
+            | {include: map({
+                image: .,
+                context: ("images/" + .),
+                dockerfile: ("images/" + . + "/Dockerfile")
+              })}
+          ')"
+          candidate_matrix="$({
+            while IFS= read -r image; do
+              printf '%s\tlinux/amd64\tamd64\n' "$image"
+              printf '%s\tlinux/arm64\tarm64\n' "$image"
+            done <<< "$images"
+          } | jq -Rsc '
+            split("\n")[:-1]
+            | {include: map(
+                split("\t")
+                | {
+                    image: .[0],
+                    context: ("images/" + .[0]),
+                    dockerfile: ("images/" + .[0] + "/Dockerfile"),
+                    platform: .[1],
+                    "platform-id": .[2]
+                  }
+              )}
+          ')"
+
           {
-            echo "changed=true"
-            echo "images<<EOF"
-            printf '%s\n' "${IMAGES[@]}"
-            echo "EOF"
+            echo "candidate-matrix=$candidate_matrix"
+            echo 'has-images=true'
+            echo "image-matrix=$image_matrix"
+            echo "release-tag=$release_tag"
+            echo "target-sha=$target_sha"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Compute CalVer release tag
-        id: tag
-        if: ${{ steps.changed.outputs.changed == 'true' }}
-        run: |
-          CALVER="$(date -u +'%Y%m%d.%H%M%S')-${GITHUB_SHA::7}"
-          echo "release_tag=$CALVER" >> "$GITHUB_OUTPUT"
+  build-verify-candidates:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.has-images == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.candidate-matrix) }}
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.target-sha }}
 
-      - name: Create Git tag + GitHub Release
-        if: ${{ steps.changed.outputs.changed == 'true' }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find resumable candidate
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:candidate-${{ needs.prepare.outputs.target-sha }}-${{ matrix.platform-id }}
+        run: |
+          set -euo pipefail
+          if digest="$(docker buildx imagetools inspect "$CANDIDATE_TAG" --format '{{json .Manifest}}' 2>/dev/null | jq -er '.digest')"; then
+            echo "Reusing $CANDIDATE_TAG@$digest"
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push candidate
+        id: build
+        if: ${{ steps.candidate.outputs.exists != 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:candidate-${{ needs.prepare.outputs.target-sha }}-${{ matrix.platform-id }}
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.platform-id }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.platform-id }}
+
+      - name: Resolve exact candidate digest
+        id: exact
+        shell: bash
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          CANDIDATE_TAG: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:candidate-${{ needs.prepare.outputs.target-sha }}-${{ matrix.platform-id }}
+          EXISTING_DIGEST: ${{ steps.candidate.outputs.digest }}
+          PLATFORM_ID: ${{ matrix.platform-id }}
+        run: |
+          set -euo pipefail
+          digest="${EXISTING_DIGEST:-$BUILT_DIGEST}"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Invalid candidate digest: $digest" >&2
+            exit 1
+          fi
+          repository="${CANDIDATE_TAG%:*}"
+          reference="$repository@$digest"
+          if docker buildx imagetools inspect "$reference" --raw | jq -e 'has("manifests")' >/dev/null; then
+            echo "Candidate $reference is an image index, not one platform manifest." >&2
+            exit 1
+          fi
+          docker buildx imagetools inspect "$reference" --format '{{json .Image}}' \
+            | jq -e --arg architecture "$PLATFORM_ID" '
+                .os == "linux" and .architecture == $architecture
+              ' >/dev/null
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
+
+      # Keep the explicit version until trivy-action ships a default Trivy
+      # release whose binary assets are available upstream.
+      - name: Scan exact candidate digest
+        uses: aquasecurity/trivy-action@v0.33.1
+        with:
+          image-ref: ${{ steps.exact.outputs.reference }}
+          format: table
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+          version: v0.74.0
+
+      - name: Record successful digest scan
+        shell: bash
+        env:
+          CANDIDATE_REF: ${{ steps.exact.outputs.reference }}
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "Scan passed for $PLATFORM candidate $CANDIDATE_REF"
+
+      - name: Smoke-test exact candidate digest
+        shell: bash
+        env:
+          CANDIDATE_REF: ${{ steps.exact.outputs.reference }}
+          IMAGE: ${{ matrix.image }}
+          PLATFORM: ${{ matrix.platform }}
+          PLATFORM_ID: ${{ matrix.platform-id }}
+        run: |
+          set -euo pipefail
+          docker pull --platform "$PLATFORM" "$CANDIDATE_REF"
+          actual_platform="$(docker image inspect "$CANDIDATE_REF" --format '{{.Os}}/{{.Architecture}}')"
+          if [[ "$actual_platform" != "$PLATFORM" ]]; then
+            echo "Candidate is $actual_platform, expected $PLATFORM." >&2
+            exit 1
+          fi
+
+          case "$IMAGE" in
+            rsync)
+              docker run --rm --platform "$PLATFORM" "$CANDIDATE_REF" --version
+              ;;
+            volume-permission-setter)
+              smoke_dir="$RUNNER_TEMP/smoke-$IMAGE-$PLATFORM_ID"
+              mkdir -p "$smoke_dir/child"
+              chmod 0755 "$smoke_dir" "$smoke_dir/child"
+              docker run --rm --platform "$PLATFORM" \
+                --env TARGET=/target \
+                --env WANT_UID=10001 \
+                --env WANT_GID=10002 \
+                --env WANT_MODE=2775 \
+                --volume "$smoke_dir:/target" \
+                "$CANDIDATE_REF"
+              [[ "$(stat -c '%u:%g:%a' "$smoke_dir")" == "10001:10002:2775" ]]
+              [[ "$(stat -c '%u:%g:%a' "$smoke_dir/child")" == "10001:10002:2775" ]]
+              ;;
+            *)
+              echo "No smoke test is defined for image $IMAGE." >&2
+              exit 1
+              ;;
+          esac
+
+  promote:
+    needs: [prepare, build-verify-candidates]
+    if: ${{ needs.prepare.outputs.has-images == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Preflight and promote verified manifests
+        shell: bash
+        env:
+          IMAGE_MATRIX: ${{ needs.prepare.outputs.image-matrix }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
+          TARGET_SHA: ${{ needs.prepare.outputs.target-sha }}
+        run: |
+          set -euo pipefail
+
+          manifest_digest() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>/dev/null \
+              | jq -er '.digest'
+          }
+
+          verify_manifest() {
+            local reference="$1"
+            local expected_amd64="$2"
+            local expected_arm64="$3"
+            local raw
+            raw="$(docker buildx imagetools inspect "$reference" --raw)"
+            jq -e \
+              --arg amd64 "$expected_amd64" \
+              --arg arm64 "$expected_arm64" '
+                (.manifests | length) == 2
+                and ([.manifests[] | select(
+                  .platform.os == "linux"
+                  and .platform.architecture == "amd64"
+                  and .digest == $amd64
+                )] | length) == 1
+                and ([.manifests[] | select(
+                  .platform.os == "linux"
+                  and .platform.architecture == "arm64"
+                  and .digest == $arm64
+                )] | length) == 1
+              ' <<< "$raw" >/dev/null
+          }
+
+          declare -A amd64_digests=()
+          declare -A arm64_digests=()
+          declare -A calver_digests=()
+          declare -A sha_digests=()
+
+          mapfile -t images < <(jq -er '.include[].image' <<< "$IMAGE_MATRIX")
+          [[ ${#images[@]} -gt 0 ]]
+
+          # Check every candidate and every pre-existing public tag before
+          # publishing anything, so deterministic tag collisions fail closed.
+          for image in "${images[@]}"; do
+            repository="$REGISTRY/$OWNER/$image"
+            amd64_ref="$repository:candidate-$TARGET_SHA-amd64"
+            arm64_ref="$repository:candidate-$TARGET_SHA-arm64"
+            amd64_digests["$image"]="$(manifest_digest "$amd64_ref")"
+            arm64_digests["$image"]="$(manifest_digest "$arm64_ref")"
+
+            calver_ref="$repository:$RELEASE_TAG"
+            sha_ref="$repository:sha-$TARGET_SHA"
+            calver_digests["$image"]="$(manifest_digest "$calver_ref" || true)"
+            sha_digests["$image"]="$(manifest_digest "$sha_ref" || true)"
+
+            if [[ -n "${calver_digests[$image]}" ]]; then
+              verify_manifest "$calver_ref" "${amd64_digests[$image]}" "${arm64_digests[$image]}" || {
+                echo "$calver_ref already exists with different content." >&2
+                exit 1
+              }
+            fi
+            if [[ -n "${sha_digests[$image]}" ]]; then
+              verify_manifest "$sha_ref" "${amd64_digests[$image]}" "${arm64_digests[$image]}" || {
+                echo "$sha_ref already exists with different content." >&2
+                exit 1
+              }
+            fi
+            if [[ -n "${calver_digests[$image]}" && -n "${sha_digests[$image]}" \
+              && "${calver_digests[$image]}" != "${sha_digests[$image]}" ]]; then
+              echo "$calver_ref and $sha_ref do not point to the same manifest." >&2
+              exit 1
+            fi
+          done
+
+          for image in "${images[@]}"; do
+            repository="$REGISTRY/$OWNER/$image"
+            calver_ref="$repository:$RELEASE_TAG"
+            sha_ref="$repository:sha-$TARGET_SHA"
+            amd64_source="$repository@${amd64_digests[$image]}"
+            arm64_source="$repository@${arm64_digests[$image]}"
+
+            if [[ -n "${calver_digests[$image]}" && -n "${sha_digests[$image]}" ]]; then
+              echo "Both public tags already exist for $image; leaving them unchanged."
+            elif [[ -n "${calver_digests[$image]}" ]]; then
+              docker buildx imagetools create --tag "$sha_ref" \
+                "$repository@${calver_digests[$image]}"
+            elif [[ -n "${sha_digests[$image]}" ]]; then
+              docker buildx imagetools create --tag "$calver_ref" \
+                "$repository@${sha_digests[$image]}"
+            else
+              docker buildx imagetools create \
+                --tag "$calver_ref" \
+                --tag "$sha_ref" \
+                "$amd64_source" \
+                "$arm64_source"
+            fi
+
+            final_calver_digest="$(manifest_digest "$calver_ref")"
+            final_sha_digest="$(manifest_digest "$sha_ref")"
+            [[ "$final_calver_digest" == "$final_sha_digest" ]]
+            verify_manifest "$calver_ref" "${amd64_digests[$image]}" "${arm64_digests[$image]}"
+            verify_manifest "$sha_ref" "${amd64_digests[$image]}" "${arm64_digests[$image]}"
+            echo "Published $image manifest $final_calver_digest with linux/amd64 and linux/arm64."
+          done
+
+  create-release:
+    needs: [prepare, promote]
+    if: ${{ needs.prepare.outputs.has-images == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.target-sha }}
+
+      - name: Create Git tag and GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
+          TARGET_SHA: ${{ needs.prepare.outputs.target-sha }}
         run: |
-          TAG="${{ steps.tag.outputs.release_tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "CalVer release $TAG"
-          git push origin "$TAG"
-          gh release create "$TAG" --title "Release $TAG" --notes "Automated CalVer release for commit $GITHUB_SHA"
+          set -euo pipefail
 
-  publish:
-    needs: release
-    if: ${{ needs.release.outputs.changed == 'true' }}
-    uses: ./.github/workflows/publish-ghcr.yaml
-    with:
-      tag_name: ${{ needs.release.outputs.tag_name }}
-    secrets: inherit
+          remote_sha="$(
+            git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 {print $1}'
+          )"
+          if [[ -z "$remote_sha" ]]; then
+            remote_sha="$(
+              git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 {print $1}'
+            )"
+          fi
+
+          if [[ -n "$remote_sha" && "$remote_sha" != "$TARGET_SHA" ]]; then
+            echo "Release tag $RELEASE_TAG already points to $remote_sha, not $TARGET_SHA." >&2
+            exit 1
+          fi
+
+          if [[ -z "$remote_sha" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_TAG" "$TARGET_SHA" -m "CalVer release $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          else
+            echo "Git tag $RELEASE_TAG already points to $TARGET_SHA."
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $RELEASE_TAG already exists."
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "Release $RELEASE_TAG" \
+              --notes "Automated CalVer release for commit $TARGET_SHA"
+          fi
+
+  release-success:
+    name: release-success
+    if: ${{ always() }}
+    needs: [prepare, build-verify-candidates, promote, create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify release transaction
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ needs.build-verify-candidates.result }}
+          HAS_IMAGES: ${{ needs.prepare.outputs.has-images }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PROMOTE_RESULT: ${{ needs.promote.result }}
+          RELEASE_RESULT: ${{ needs.create-release.result }}
+        run: |
+          set -euo pipefail
+          [[ "$PREPARE_RESULT" == "success" ]]
+
+          if [[ "$HAS_IMAGES" == "true" ]]; then
+            [[ "$BUILD_RESULT" == "success" ]]
+            [[ "$PROMOTE_RESULT" == "success" ]]
+            [[ "$RELEASE_RESULT" == "success" ]]
+          else
+            [[ "$HAS_IMAGES" == "false" ]]
+            [[ "$BUILD_RESULT" == "skipped" ]]
+            [[ "$PROMOTE_RESULT" == "skipped" ]]
+            [[ "$RELEASE_RESULT" == "skipped" ]]
+          fi
