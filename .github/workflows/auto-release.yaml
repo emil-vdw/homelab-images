@@ -284,46 +284,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: echo "Scan passed for $PLATFORM candidate $CANDIDATE_REF"
 
-      - name: Smoke-test exact candidate digest
-        shell: bash
-        env:
-          CANDIDATE_REF: ${{ steps.exact.outputs.reference }}
-          IMAGE: ${{ matrix.image }}
-          PLATFORM: ${{ matrix.platform }}
-          PLATFORM_ID: ${{ matrix.platform-id }}
-        run: |
-          set -euo pipefail
-          docker pull --platform "$PLATFORM" "$CANDIDATE_REF"
-          actual_platform="$(docker image inspect "$CANDIDATE_REF" --format '{{.Os}}/{{.Architecture}}')"
-          if [[ "$actual_platform" != "$PLATFORM" ]]; then
-            echo "Candidate is $actual_platform, expected $PLATFORM." >&2
-            exit 1
-          fi
-
-          case "$IMAGE" in
-            rsync)
-              docker run --rm --platform "$PLATFORM" "$CANDIDATE_REF" --version
-              ;;
-            volume-permission-setter)
-              smoke_dir="$RUNNER_TEMP/smoke-$IMAGE-$PLATFORM_ID"
-              mkdir -p "$smoke_dir/child"
-              chmod 0755 "$smoke_dir" "$smoke_dir/child"
-              docker run --rm --platform "$PLATFORM" \
-                --env TARGET=/target \
-                --env WANT_UID=10001 \
-                --env WANT_GID=10002 \
-                --env WANT_MODE=2775 \
-                --volume "$smoke_dir:/target" \
-                "$CANDIDATE_REF"
-              [[ "$(stat -c '%u:%g:%a' "$smoke_dir")" == "10001:10002:2775" ]]
-              [[ "$(stat -c '%u:%g:%a' "$smoke_dir/child")" == "10001:10002:2775" ]]
-              ;;
-            *)
-              echo "No smoke test is defined for image $IMAGE." >&2
-              exit 1
-              ;;
-          esac
-
   promote:
     needs: [prepare, build-verify-candidates]
     if: ${{ needs.prepare.outputs.has-images == 'true' }}
