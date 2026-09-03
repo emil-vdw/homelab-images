@@ -1,0 +1,114 @@
+# Trivy ignore file for everything under images/. Suppresses findings
+# that are genuinely not ours to fix - see the per-entry comments below
+# for why each one is here.
+#
+# HOW THIS GETS LOADED: trivy's own --ignorefile flag defaults to the
+# literal string ".trivyignore" resolved against the current working
+# directory (confirmed via `trivy image --help` on v0.65.0: "default
+# \".trivyignore\""). .github/workflows/ci-build-scan.yaml checks the
+# repo out to $GITHUB_WORKSPACE and runs aquasecurity/trivy-action@v0.33.1
+# from there with no working-directory override, so trivy finds this file
+# on its own - no `trivyignores:` input needed in the workflow, and none
+# is set. Confirmed by reading trivy-action's own entrypoint.sh at that
+# tag: it only ever sets TRIVY_IGNOREFILE when the action's `trivyignores:`
+# input is non-empty; left unset (as here), trivy falls through to its
+# own CLI default and picks this file up unassisted.
+#
+# WHY PLAIN .trivyignore AND NOT .trivyignore.yaml: yaml support (with
+# `purls`/`paths` scoping and an `expired_at` field) is real in trivy
+# v0.65.0, but two things rule it out here:
+#   1. Trivy decides yaml-vs-plain purely by filepath.Ext() of the path
+#      passed to --ignorefile (pkg/result/ignore.go, ParseIgnoreFile) -
+#      it never sniffs content. Yaml mode also requires passing
+#      --ignorefile explicitly; trivy does not auto-detect
+#      .trivyignore.yaml the way it does .trivyignore.
+#   2. trivy-action's `trivyignores:` input mechanism (the only way to
+#      pass --ignorefile through this action) concatenates every given
+#      file's content into a NEW file it names "./trivyignores" - no
+#      extension - before pointing TRIVY_IGNOREFILE at it. A yaml file
+#      routed through that input would silently stop parsing as yaml the
+#      moment it lands in that extension-less copy, and would then be
+#      misread as (invalid, inert) plain-format lines: the scan would
+#      report success while suppressing nothing. That failure mode is
+#      worse than not having an ignore file at all, since it looks
+#      handled.
+# Relying on trivy's own default lookup instead sidesteps that mechanism
+# entirely, and the plain format's line-level `exp:` suffix gives the
+# same "don't suppress forever" property yaml's `expired_at` would have.
+#
+# SCOPE: this file is repo-root-global. Trivy's plain format matches by
+# finding ID only - there is no per-package/per-image scoping available
+# without yaml's `purls`/`paths` fields, which are off the table per
+# above. Every entry names which image(s)/package(s) it covers today. If
+# a future image introduces one of these same IDs in a package we COULD
+# actually fix, this file would wrongly swallow it there too - check here
+# first if a scan looks suspiciously clean.
+#
+# Every entry expires ~6 months from when it was added (2026-09-02) so a
+# stale suppression makes CI fail loudly again instead of staying quiet
+# forever by accident.
+
+# --- images/seerr-mcp (@cyanheads/seerr-mcp-server's own npm tree) and
+# --- images/claude-code (Claude Code's own npm tree) ---
+# brace-expansion, ip-address, tar: transitive dependencies neither
+# Dockerfile installs directly or can re-pin without forking the
+# respective package.json. No non-breaking patched release resolvable
+# through the existing top-level pins as of this review.
+CVE-2026-14257 exp:2027-03-02
+CVE-2026-69152 exp:2027-03-02
+CVE-2026-69192 exp:2027-03-02
+CVE-2026-73566 exp:2027-03-02
+
+# --- images/truenas-mcp (Python, vendored inside pip itself, not our
+# --- install line) ---
+# msgpack 1.1.2 and setuptools 70.3.0 are NOT top-level packages our
+# `pip install "mcp-proxy==0.12.0" "mcp<2.0.0"` line pulls in - `pip list`
+# in the built image shows no such packages. Both are pip 26.2.1's own
+# internal vendored copies (pip/_vendor/msgpack,
+# pip/_vendor/setuptools via pip/_vendor/vendor.txt), present
+# byte-for-byte in the untouched python:3.13.15-slim-bookworm base image
+# before this Dockerfile runs anything - confirmed by scanning that base
+# image directly. pip 26.2.1 is also the current latest pip release on
+# PyPI, so there is no newer pip to bump to either. Tried
+# `pip install --upgrade setuptools "msgpack>=1.2.1"` anyway (see
+# images/truenas-mcp/Dockerfile) - it cannot reach pip's internal vendored
+# copies and removed 0 of these findings, so it was left out.
+GHSA-6v7p-g79w-8964 exp:2027-03-02
+CVE-2025-47273 exp:2027-03-02
+
+# --- images/truenas-mcp (Go, compiled into the truenas-mcp v0.0.6 binary
+# --- TrueNAS itself publishes) ---
+# golang.org/x/net v0.17.0 and Go stdlib v1.25.12 are baked into the
+# prebuilt linux-amd64 binary fetched from truenas/truenas-mcp's GitHub
+# release - this Dockerfile downloads and checksum-verifies that binary,
+# it doesn't compile it, so its dependencies can't be bumped without
+# building our own fork of an upstream project. v0.0.6 is upstream's
+# current release.
+CVE-2023-45288 exp:2027-03-02
+CVE-2024-45338 exp:2027-03-02
+CVE-2026-25681 exp:2027-03-02
+CVE-2026-27136 exp:2027-03-02
+CVE-2026-33814 exp:2027-03-02
+# CVE-2026-39821 and CVE-2026-46600 cover golang.org/x/net here AND (as a
+# coincidentally shared ID, unrelated codebase) Go stdlib in
+# images/claude-code's kubectl binary below.
+CVE-2026-39821 exp:2027-03-02
+CVE-2026-46600 exp:2027-03-02
+CVE-2026-33818 exp:2027-03-02
+CVE-2026-56853 exp:2027-03-02
+CVE-2026-56858 exp:2027-03-02
+CVE-2026-56859 exp:2027-03-02
+CVE-2026-56860 exp:2027-03-02
+CVE-2026-56862 exp:2027-03-02
+
+# --- images/claude-code (Go, compiled into the kubectl v1.35.8 and flux
+# --- v2.9.5 binaries we download) ---
+# Both are upstream's current releases as of this review (checked
+# dl.k8s.io/release/stable-1.35.txt and the flux2 GitHub releases API) -
+# there is no newer version to bump to, and we don't compile either
+# binary ourselves. kubectl's Go stdlib CVEs are the shared IDs already
+# listed above. flux's own dependencies:
+CVE-2026-71556 exp:2027-03-02
+CVE-2026-56854 exp:2027-03-02
+CVE-2026-84304 exp:2027-03-02
+GHSA-hrxh-6v49-42gf exp:2027-03-02

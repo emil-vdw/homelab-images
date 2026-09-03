@@ -5,7 +5,8 @@
   ],
   "enabledManagers": [
     "dockerfile",
-    "github-actions"
+    "github-actions",
+    "custom.regex"
   ],
   "timezone": "Europe/Amsterdam",
   "prHourlyLimit": 10,
@@ -14,6 +15,62 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "ignoreTests": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^images/claude-code/Dockerfile$/"],
+      "matchStrings": [
+        "npm install -g @anthropic-ai/claude-code@(?<currentValue>[\\d.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@anthropic-ai/claude-code"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^images/claude-code/Dockerfile$/"],
+      "matchStrings": [
+        "KUBECTL_VERSION=(?<currentValue>v[\\d.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "kubernetes/kubernetes"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^images/claude-code/Dockerfile$/"],
+      "matchStrings": [
+        "FLUX_VERSION=(?<currentValue>v[\\d.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "fluxcd/flux2"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^images/seerr-mcp/Dockerfile$/"],
+      "matchStrings": [
+        "npm install -g @cyanheads/seerr-mcp-server@(?<currentValue>[\\d.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@cyanheads/seerr-mcp-server"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^images/truenas-mcp/Dockerfile$/"],
+      "matchStrings": [
+        "pip install --no-cache-dir \"mcp-proxy==(?<currentValue>[\\d.]+)\""
+      ],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "mcp-proxy"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^images/truenas-mcp/Dockerfile$/"],
+      "matchStrings": [
+        "TRUENAS_MCP_VERSION=(?<currentValue>v[\\d.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "truenas/truenas-mcp"
+    }
+  ],
   "packageRules": [
     {
       "matchManagers": [
@@ -41,6 +98,14 @@
         "github-actions"
       ],
       "groupName": "GitHub Actions"
+    },
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "groupName": "Dockerfile pinned tool versions",
+      "commitMessageTopic": "{{depName}}",
+      "automerge": false
     }
   ]
 }
