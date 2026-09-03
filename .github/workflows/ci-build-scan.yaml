@@ -2,11 +2,6 @@ name: CI Build and Scan
 
 on:
   pull_request: {}
-  push:
-    branches: ["main"]
-    paths:
-      - "images/**"
-      - ".github/workflows/ci-build-scan.yaml"
   workflow_dispatch: {}
 
 permissions:
@@ -29,7 +24,6 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -71,13 +65,6 @@ jobs:
           case "$EVENT_NAME" in
             pull_request)
               select_changed_images "$BASE_SHA...$HEAD_SHA"
-              ;;
-            push)
-              if [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-                select_all_images
-              else
-                select_changed_images "$BEFORE_SHA..$HEAD_SHA"
-              fi
               ;;
             workflow_dispatch)
               select_all_images
