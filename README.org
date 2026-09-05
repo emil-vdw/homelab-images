@@ -4,6 +4,10 @@ Simple container images for homelab tasks.
 
 * Images
 
+** codex
+Persistent, non-root Codex standalone host for ChatGPT mobile Remote.
+See [[file:images/codex/README.md][setup, authentication and lifecycle notes]].
+
 ** rsync
 Example:
 #+begin_src sh
