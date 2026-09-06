@@ -19,9 +19,9 @@ RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/install-codex.sh \
     && rm /tmp/install-codex.sh \
     && codex --version
 
-ARG KUBECTL_VERSION=1.35.7
+ARG KUBECTL_VERSION=1.35.8
 ARG FLUX_VERSION=2.9.5
-ARG HELM_VERSION=4.2.2
+ARG HELM_VERSION=4.2.4
 
 # Use upstream binaries for both supported architectures and verify each
 # release's checksums. Keep kubectl within one minor of the cluster API.
