@@ -39,6 +39,9 @@ docker exec "$name" bash -euc '
     gh --version
     node --version
     python3 --version
+    kubectl version --client
+    flux --version
+    helm version --short
 '
 
 # A dead daemon must make the probe fail and the supervisor exit nonzero.
