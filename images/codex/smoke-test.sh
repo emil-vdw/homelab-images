@@ -38,6 +38,12 @@ docker exec "$name" bash -euc '
     git --version
     gh --version
     node --version
+    npm --version
+    mkdir "$HOME/workspaces/npm-check"
+    cd "$HOME/workspaces/npm-check"
+    npm init --yes >/dev/null
+    npm install --offline --ignore-scripts --no-audit --no-fund >/dev/null
+    test -s package-lock.json
     python3 --version
 '
 

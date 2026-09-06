@@ -19,12 +19,27 @@ RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/install-codex.sh \
     && rm /tmp/install-codex.sh \
     && codex --version
 
+# npm 12.0.2 still bundles vulnerable versions of these dependencies. Keep
+# their compatible fixes until npm ships them (CVE-2026-14257/69152/69192/73566).
+RUN npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund \
+    && npm --prefix /tmp/npm-fixes install \
+       --omit=dev --ignore-scripts --no-audit --no-fund --no-package-lock --no-save \
+       brace-expansion@5.0.9 ip-address@10.3.1 tar@7.5.21 \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+       /usr/local/lib/node_modules/npm/node_modules/ip-address \
+       /usr/local/lib/node_modules/npm/node_modules/tar \
+    && cp -a /tmp/npm-fixes/node_modules/. /usr/local/lib/node_modules/npm/node_modules/ \
+    && rm -rf /tmp/npm-fixes \
+    && npm cache clean --force
+
 RUN groupadd --gid 20213 codex \
     && useradd --uid 20213 --gid 20213 --create-home --shell /bin/bash codex \
     && chmod 700 /home/codex
 
 COPY entrypoint.sh /usr/local/bin/codex-host
 RUN chmod 755 /usr/local/bin/codex-host
+
+LABEL org.opencontainers.image.source="https://github.com/emil-vdw/homelab-images"
 
 ENV HOME=/home/codex \
     CODEX_HOME=/home/codex/.codex \
