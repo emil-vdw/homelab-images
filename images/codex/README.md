@@ -2,7 +2,7 @@
 
 A single non-root development host for the experimental ChatGPT mobile Remote
 workflow. Includes Git/GitHub CLI, SSH, Node/npm, Python/venv, a C/C++ toolchain,
-and the official managed standalone Codex distribution. No inbound port is
+kubectl, Flux CLI, Helm, and the official managed standalone Codex distribution. No inbound port is
 exposed. UID/GID: `20213`.
 
 Persist `/home/codex`, owned by `20213:20213` with mode `0700`. This preserves
@@ -40,6 +40,12 @@ verifies the release downloads. Review both pins when upgrading. The managed
 standalone path in the home volume links to the root-owned installation in
 `/opt/codex`, so replacing the image selects the new executable even when the
 home is restored from an older volume.
+
+Cluster clients are pinned by `KUBECTL_VERSION`, `FLUX_VERSION`, and
+`HELM_VERSION`, with upstream release checksums checked during the build.
+Keep kubectl within one minor version of the target API server. Kubernetes
+access is supplied by the deployment's service account and RBAC; the image
+contains no kubeconfig, token, or cluster permissions.
 
 Do not run `remote-control start`, `daemon bootstrap`, or `codex update` in this
 image: the first two can start the standalone updater. Use

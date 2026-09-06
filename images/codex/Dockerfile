@@ -19,6 +19,32 @@ RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/install-codex.sh \
     && rm /tmp/install-codex.sh \
     && codex --version
 
+ARG KUBECTL_VERSION=1.35.7
+ARG FLUX_VERSION=2.9.5
+ARG HELM_VERSION=4.2.2
+
+# Use upstream binaries for both supported architectures and verify each
+# release's checksums. Keep kubectl within one minor of the cluster API.
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64|arm64) ;; *) exit 1 ;; esac; \
+    mkdir /tmp/cluster-tools; cd /tmp/cluster-tools; \
+    curl -fsSLO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${arch}/kubectl"; \
+    curl -fsSLO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${arch}/kubectl.sha256"; \
+    echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -; \
+    install -m 755 kubectl /usr/local/bin/kubectl; \
+    curl -fsSLO "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_${arch}.tar.gz"; \
+    curl -fsSLO "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_checksums.txt"; \
+    grep " flux_${FLUX_VERSION}_linux_${arch}.tar.gz\$" "flux_${FLUX_VERSION}_checksums.txt" | sha256sum -c -; \
+    tar -xzf "flux_${FLUX_VERSION}_linux_${arch}.tar.gz" flux; \
+    install -m 755 flux /usr/local/bin/flux; \
+    curl -fsSLO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${arch}.tar.gz"; \
+    curl -fsSLO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${arch}.tar.gz.sha256sum"; \
+    sha256sum -c "helm-v${HELM_VERSION}-linux-${arch}.tar.gz.sha256sum"; \
+    tar -xzf "helm-v${HELM_VERSION}-linux-${arch}.tar.gz" "linux-${arch}/helm"; \
+    install -m 755 "linux-${arch}/helm" /usr/local/bin/helm; \
+    cd /; rm -rf /tmp/cluster-tools
+
 RUN groupadd --gid 20213 codex \
     && useradd --uid 20213 --gid 20213 --create-home --shell /bin/bash codex \
     && chmod 700 /home/codex
