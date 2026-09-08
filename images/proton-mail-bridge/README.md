@@ -1,11 +1,34 @@
 # Proton Mail Bridge for Terminus
 
-Builds the unmodified headless executable from Proton's official 3.26.0 amd64
+Packages the unmodified headless executable from Proton's official 3.26.0 amd64
 Debian package. Both its SHA-256 and its embedded Debian signature are checked
 against a checksum-pinned Proton public key and a local verification policy.
 The GUI and self-updating launcher are omitted. `pass`, GPG, HAProxy, Python's
 standard library, and tini provide the container lifecycle. No Proton account
 or credentials are used at build time.
+
+## Release blocker (2026-09-08)
+
+The image builds and all four container integration tests pass, but the
+[CI security scan](https://github.com/emil-vdw/homelab-images/actions/runs/34224162384/job/102054132699)
+fails on the official Bridge executable: 21 HIGH and one CRITICAL dependency
+findings, with none reported for Debian OS packages in that scan. The binary
+embeds Go 1.26.1, x/crypto 0.53.0 and gRPC 1.82.1. The critical finding is
+CVE-2026-56854 in x/crypto/ssh; the scan reports a fix in 0.55.0. It also reports
+Go fixes through 1.26.6 and gRPC 1.83.1. Dependency presence alone does not prove
+that each vulnerable function is reachable in this headless deployment;
+reachability has not been established and no findings have been suppressed.
+
+Proton's [official update feed](https://proton.me/download/bridge/linux/x86/v1/version.json)
+currently lists 3.26.0 as **EarlyAccess** and 3.25.0 as Stable. GitHub's newest
+release is also 3.26.0, so no newer official package was available at review.
+This pinned package is a validation candidate, not an approved production image.
+Keep both PRs draft and Flux suspended until an updated verified official
+package passes the scan, or a separately reviewed remediation is validated.
+Rebuilding from source with dependency changes would need its own provenance,
+compatibility and security review; do not bypass the scan or simply downgrade
+in order to publish. The existing Codex image also failed its independent scan
+in this CI run; that unrelated failure is outside this change.
 
 The Kubernetes deployment uses two containers from this image:
 
