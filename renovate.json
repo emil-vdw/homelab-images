@@ -5,7 +5,8 @@
   ],
   "enabledManagers": [
     "dockerfile",
-    "github-actions"
+    "github-actions",
+    "custom.regex"
   ],
   "timezone": "Europe/Amsterdam",
   "prHourlyLimit": 10,
@@ -45,6 +46,34 @@
       ],
       "groupName": "GitHub Actions",
       "automerge": true
+    },
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "ProtonMail/proton-bridge"
+      ],
+      "automerge": false,
+      "prBodyNotes": [
+        "This updates the official Bridge package version only. Verify the new Debian package signature using the pinned Proton key, then update BRIDGE_SHA256 in the same PR; CI intentionally rejects a stale checksum.",
+        "Check Proton's official update feed for the release channel, review the security scan and runtime tests, and reassess any accepted findings before merging. A newer upstream release is not proof that every vulnerability is fixed."
+      ]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^images/proton-mail-bridge/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?:^|\\r?\\n)ARG BRIDGE_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\r?\\n"
+      ],
+      "depNameTemplate": "ProtonMail/proton-bridge",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
     }
   ]
 }
