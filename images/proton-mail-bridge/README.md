@@ -63,5 +63,14 @@ during initial CLI setup. For upgrades update package version/hash together,
 review official release notes/signing-key changes, pass CI scan/tests, and
 back up the complete PVC and dedicated keyring Secret before rollout.
 
+Renovate tracks `BRIDGE_VERSION` against Proton's official GitHub releases and
+opens version-update PRs with automerge disabled. It does not calculate the
+package checksum: verify the replacement Debian package's signature with the
+pinned Proton key, then update `BRIDGE_SHA256` in that PR. A version-only change
+fails the existing checksum check until this review is complete. Check Proton's
+update feed for the release channel; GitHub release metadata alone does not
+establish that a version has reached Proton's stable channel. Renovate cannot
+patch libraries inside an upstream binary or guarantee an upstream fix date.
+
 Proton's upstream license is GPL-3.0. Source and release history:
 https://github.com/ProtonMail/proton-bridge/tree/v3.26.0
