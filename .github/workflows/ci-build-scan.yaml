@@ -137,6 +137,14 @@ jobs:
         if: ${{ matrix.image == 'codex' }}
         run: bash images/codex/smoke-test.sh local/codex:ci
 
+      - name: Test mail proxy lifecycle and access controls
+        if: ${{ matrix.image == 'proton-mail-bridge' }}
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /run \
+            --entrypoint python3 \
+            -v "$PWD/images/proton-mail-bridge:/tests:ro" \
+            local/proton-mail-bridge:ci -m unittest discover -s /tests -v
+
       # Upstream renamed its tags from `0.x.y` to `v0.x.y` and deleted the
       # old unprefixed names, so both `0.33.1` and `0.34.0` 404 today and
       # every job fails at "Set up job" before any image is built. Keep the
