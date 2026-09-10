@@ -71,3 +71,66 @@ end-to-end test. No Kubernetes credentials or Docker socket are included.
 References: [daemon lifecycle](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/app-server-daemon/README.md),
 [remote commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
 [skills](https://learn.chatgpt.com/docs/build-skills).
+
+## Productivity commands
+
+`homelab-vikunja` searches projects/tasks, reads task details and creates tasks
+with due dates and absolute reminders. `homelab-radicale` discovers CalDAV
+calendars (including accepted shares), searches events in a time range, reads
+individual events and creates timed/all-day events with optional display alarms.
+Both emit JSON. See each command's `--help` and subcommand help.
+
+These are Python CLIs invoked by the agent's shell tool. Python's standard
+library handles HTTPS and CalDAV XML; Debian's `python3-icalendar` handles
+calendar parsing, escaping and serialization. The host's global instructions
+and deployment configuration live in the homelab repository.
+
+Set `VIKUNJA_URL` (including `/api/v1/`) and `RADICALE_URL` (the authenticated
+CalDAV root). Both must use HTTPS. `HOMELAB_TOOLS_CA_FILE` optionally adds a CA
+bundle to system trust. URLs returned by discovery must remain on that origin
+and within that root; redirects are rejected. CalDAV must be accessed through
+its authenticating proxy, not a trusted-header backend.
+
+Provision mode `0600` JSON files on the private home volume:
+
+- `~/.config/homelab-tools/vikunja.json`: `{"token":"<API token>"}`
+- `~/.config/homelab-tools/radicale.json`: `{"username":"<login>","token":"<app token>"}`
+
+`VIKUNJA_CREDENTIALS_FILE` and `RADICALE_CREDENTIALS_FILE` override those paths.
+Credentials are never supplied in CLI arguments. Missing credentials affect
+only the tool invocation, not host startup. Give the Vikunja token project read
+and task read/create plus task-comment read-all permissions; the tools expose no update/delete commands.
+
+Creates require an explicit project ID/calendar URL. Event creation also needs
+a stable `--uid` (generate a UUID once per intended event). It uses conditional
+PUT to prevent overwriting an existing resource. Writes are not automatically
+retried. A read-back failure preserves the successful creation's ID/URL; inspect
+it before repeating a request. Vikunja creation has no client idempotency key.
+`--dry-run` renders the payload without sending a request (configuration and
+credentials must still be present). Timestamp arguments require UTC offsets;
+all-day event end dates are exclusive. Notification delivery depends on clients.
+
+Offline tests run during image builds:
+
+```sh
+python3 -m unittest discover -s images/codex/productivity -v
+```
+
+For disposable protocol integration tests, use a temporary venv with
+`icalendar` and `radicale==3.8.0`. The tests use local TLS servers and generated
+certificates; no production credentials or data are involved:
+
+```sh
+python images/codex/tests/test_caldav_integration.py
+VIKUNJA_TEST_BINARY=/path/to/verified/vikunja-v2.6.0-linux-amd64 \
+  python images/codex/tests/test_vikunja_integration.py
+```
+
+The Vikunja test requires an upstream binary verified against its release
+checksum. It creates a disposable account, scoped API token and SQLite database.
+Production network policy, proxy authentication and notification delivery need
+an authenticated acceptance test after the deployment updates its image pin.
+
+Protocol references: [Vikunja 2.6.0 schema](https://github.com/go-vikunja/vikunja/blob/v2.6.0/pkg/swagger/swagger.json),
+[CalDAV](https://www.rfc-editor.org/rfc/rfc4791),
+[OpenCloud app-token authentication](https://docs.opencloud.eu/docs/admin/configuration/radicale-integration/).

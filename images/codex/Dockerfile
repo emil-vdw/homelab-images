@@ -7,7 +7,7 @@ RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
        bash build-essential ca-certificates curl gh git jq less openssh-client \
-       procps python3 python3-pip python3-venv ripgrep tini unzip \
+       procps python3 python3-icalendar python3-pip python3-venv ripgrep tini unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Keep the official standalone layout, including its bundled executables.
@@ -48,6 +48,13 @@ RUN set -eu; \
 RUN groupadd --gid 20213 codex \
     && useradd --uid 20213 --gid 20213 --create-home --shell /bin/bash codex \
     && chmod 700 /home/codex
+
+COPY productivity/*.py /opt/homelab-tools/
+COPY productivity/homelab-vikunja productivity/homelab-radicale /usr/local/bin/
+RUN chmod 755 /usr/local/bin/homelab-vikunja /usr/local/bin/homelab-radicale \
+    && python3 -m unittest discover -s /opt/homelab-tools -v \
+    && homelab-vikunja --help \
+    && homelab-radicale --help
 
 COPY entrypoint.sh /usr/local/bin/codex-host
 RUN chmod 755 /usr/local/bin/codex-host

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/python3 /opt/homelab-tools/radicale_tool.py "$@"
