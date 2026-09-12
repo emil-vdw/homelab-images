@@ -2,11 +2,14 @@ import hashlib
 import io
 import ssl
 import unittest
+import urllib.error
 import urllib.request
 import urllib.response
 from unittest import mock
 
-from mail_importer.webdav import WebDavClient, WebDavError, _NoRedirect
+from mail_importer.webdav import (
+    WebDavClient, WebDavError, WebDavAuthenticationError, _NoRedirect, _retry_after_seconds,
+)
 
 
 class FakeResponse:
@@ -231,7 +234,7 @@ class WebDavTests(unittest.TestCase):
             opener=self.server,
             retries=1,
         )
-        with mock.patch("mail_importer.webdav.time.sleep") as sleep:
+        with mock.patch.object(client, "_sleep") as sleep:
             client.upload_create_only(
                 "Invoices/file.pdf", content, hashlib.sha256(content).hexdigest()
             )
@@ -291,6 +294,123 @@ class WebDavTests(unittest.TestCase):
             )
         self.assertEqual(len(transport.requests), 1)
         self.assertEqual(transport.requests[0].host, "cloud.example")
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, delay):
+        self.sleeps.append(delay)
+        self.now += delay
+
+
+class ProcessingWebDav(FakeWebDav):
+    def __init__(self, clock, ready_at):
+        super().__init__()
+        self.clock = clock
+        self.ready_at = ready_at
+
+    def open(self, request, timeout):
+        if (request.get_method() in ("HEAD", "GET")
+                and request.full_url in self.files
+                and self.clock.now < self.ready_at):
+            self.requests.append(request)
+            raise urllib.error.HTTPError(request.full_url, 425, "Too Early", {}, io.BytesIO())
+        return super().open(request, timeout)
+
+
+class ReadinessTests(unittest.TestCase):
+    def client(self, server, clock, **kwargs):
+        return WebDavClient(
+            "https://cloud.example/root/", "user", "token", opener=server,
+            sleep=clock.sleep, monotonic=clock.monotonic, **kwargs,
+        )
+
+    def test_processing_upload_is_verified_before_single_move(self):
+        clock = FakeClock()
+        server = ProcessingWebDav(clock, ready_at=4)
+        client = self.client(server, clock)
+        content = b"%PDF-1.7\nprocessing invoice"
+        client.upload_create_only("Invoices/file.pdf", content, hashlib.sha256(content).hexdigest())
+        self.assertEqual(clock.sleeps, [1, 2, 4])
+        self.assertEqual(server.files["https://cloud.example/root/Invoices/file.pdf"], content)
+        self.assertEqual(sum(r.method == "PUT" for r in server.requests), 1)
+        self.assertEqual(sum(r.method == "MOVE" for r in server.requests), 1)
+
+    def test_deadline_preserves_temp_and_later_run_reuses_it(self):
+        clock = FakeClock()
+        server = ProcessingWebDav(clock, ready_at=100)
+        client = self.client(server, clock, readiness_timeout=3)
+        content = b"%PDF-1.7\nprocessing invoice"
+        digest = hashlib.sha256(content).hexdigest()
+        with self.assertRaises(WebDavError):
+            client.upload_create_only("Invoices/file.pdf", content, digest)
+        self.assertEqual(clock.now, 3)
+        self.assertEqual(clock.sleeps, [1, 2])
+        self.assertFalse(any(r.method in ("MOVE", "DELETE") for r in server.requests))
+        self.assertEqual(len(server.files), 1)
+        self.assertIn(".tmp", next(iter(server.files)))
+        server.ready_at = clock.now
+        client.upload_create_only("Invoices/file.pdf", content, digest)
+        self.assertEqual(sum(r.method == "PUT" for r in server.requests), 1)
+        self.assertEqual(server.files["https://cloud.example/root/Invoices/file.pdf"], content)
+
+    def test_retry_after_and_remaining_request_timeout(self):
+        clock = FakeClock()
+        server = mock.Mock()
+        server.open.side_effect = [FakeResponse(425, headers={"Retry-After": "60"}), FakeResponse(200)]
+        client = self.client(server, clock, readiness_timeout=65)
+        self.assertEqual(client._request("HEAD", client.base_url, retry=True, readiness=True).status, 200)
+        self.assertEqual(clock.sleeps, [60])
+        self.assertEqual([c.kwargs["timeout"] for c in server.open.call_args_list], [30, 5])
+
+    def test_no_request_after_retry_after_exhausts_budget(self):
+        clock = FakeClock()
+        server = mock.Mock()
+        server.open.return_value = FakeResponse(425, headers={"Retry-After": "60"})
+        client = self.client(server, clock, readiness_timeout=3)
+        self.assertEqual(client._request("HEAD", client.base_url, retry=True, readiness=True).status, 425)
+        self.assertEqual(clock.now, 3)
+        server.open.assert_called_once()
+
+    def test_transport_retry_cannot_extend_readiness_deadline(self):
+        clock = FakeClock()
+        server = mock.Mock()
+        def timeout(request, timeout):
+            clock.now += timeout
+            raise TimeoutError
+        server.open.side_effect = timeout
+        client = self.client(server, clock, readiness_timeout=0.1)
+        with self.assertRaisesRegex(WebDavError, "readiness wait expired"):
+            client._request("GET", client.base_url, retry=True, readiness=True)
+        self.assertEqual(clock.now, 0.1)
+        server.open.assert_called_once()
+
+    def test_readiness_never_retries_writes_or_auth_failures(self):
+        clock = FakeClock()
+        server = mock.Mock()
+        server.open.return_value = FakeResponse(425)
+        client = self.client(server, clock)
+        self.assertEqual(client._request("PUT", client.base_url, retry=False).status, 425)
+        self.assertEqual(clock.sleeps, [])
+        with self.assertRaises(ValueError):
+            client._request("MOVE", client.base_url, retry=True, readiness=True)
+        server.open.return_value = FakeResponse(403)
+        with self.assertRaises(WebDavAuthenticationError):
+            client._request("GET", client.base_url, retry=True, readiness=True)
+        self.assertEqual(clock.sleeps, [])
+
+    def test_retry_after_invalid_values_and_http_date(self):
+        for value in ("invalid", "9" * 500, "Sun, 06 Nov 1994 08:49:37"):
+            with self.subTest(value=value[:20]):
+                self.assertIsNone(_retry_after_seconds({"Retry-After": value}))
+        with mock.patch("mail_importer.webdav.time.time", return_value=784111772):
+            self.assertEqual(_retry_after_seconds({"retry-after": "Sun, 06 Nov 1994 08:49:37 GMT"}), 5)
 
 
 if __name__ == "__main__":

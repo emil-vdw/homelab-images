@@ -38,4 +38,6 @@ Connection settings come from the environment:
 
 The WebDAV account must have access to the configured destinations. OpenCloud 7.4.0 ignores `If-None-Match` on PUT, so the importer uploads to its own hidden temporary name, verifies the bytes, and publishes it with `MOVE` and `Overwrite: F`. It reuses that deterministic temporary name after a crash and removes it when another copy already won. OpenCloud's storage backend checks for the destination before renaming, but that check and rename are not one atomic operation. A concurrent external writer in that narrow interval could still be replaced. Keep the job suspended until a bounded live upload and repeat run confirm the deployed server's behavior.
 
+OpenCloud processes new uploads asynchronously and returns HTTP 425 until their bytes are available. The importer waits up to two minutes per verification read, honoring `Retry-After` when present. If that wait expires, it preserves the temporary upload and incomplete ledger entry for the next run.
+
 Back up `imports.sqlite3` while no importer process is running. If the ledger is lost, suspend the job until it is restored or the resulting full rescan has been reviewed.
