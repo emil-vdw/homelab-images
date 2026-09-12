@@ -145,6 +145,14 @@ jobs:
             -v "$PWD/images/proton-mail-bridge:/tests:ro" \
             local/proton-mail-bridge:ci -m unittest discover -s /tests -v
 
+      - name: Test mail attachment importer
+        if: ${{ matrix.image == 'mail-attachment-importer' }}
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --entrypoint python \
+            -v "$PWD/images/mail-attachment-importer/tests:/tests:ro" \
+            local/mail-attachment-importer:ci -m unittest discover -s /tests -v
+
       # Upstream renamed its tags from `0.x.y` to `v0.x.y` and deleted the
       # old unprefixed names, so both `0.33.1` and `0.34.0` 404 today and
       # every job fails at "Set up job" before any image is built. Keep the
