@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Mapping
 
 
@@ -41,8 +42,13 @@ class WebDavClient:
         *,
         timeout: float = 30,
         retries: int = 2,
+        readiness_timeout: float = 120,
         opener=None,
+        sleep=None,
+        monotonic=None,
     ) -> None:
+        if timeout <= 0 or retries < 0 or readiness_timeout <= 0:
+            raise ValueError("timeouts must be positive and retries must not be negative")
         parsed = urllib.parse.urlsplit(base_url)
         if parsed.scheme != "https" or not parsed.netloc or parsed.query or parsed.fragment:
             raise WebDavError("WebDAV base URL must be an HTTPS URL without a query or fragment")
@@ -56,6 +62,9 @@ class WebDavClient:
         self._authorization = f"Basic {credentials}"
         self.timeout = timeout
         self.retries = retries
+        self.readiness_timeout = readiness_timeout
+        self._sleep = sleep or time.sleep
+        self._monotonic = monotonic or time.monotonic
         if opener is None:
             context = ssl.create_default_context()
             opener = urllib.request.build_opener(
@@ -83,7 +92,7 @@ class WebDavClient:
             raise WebDavError("local content digest does not match upload digest")
         url = self._url(relative_path)
         temporary_url = self._url(_temporary_path(relative_path, digest))
-        existing = self._request("HEAD", url, retry=True)
+        existing = self._request("HEAD", url, retry=True, readiness=True)
         if existing.status == 200:
             self._accept_existing(url, digest, len(content))
             self._delete_temporary(temporary_url)
@@ -91,7 +100,7 @@ class WebDavClient:
         if existing.status != 404:
             raise WebDavError(f"WebDAV existence check failed with HTTP {existing.status}")
 
-        temporary = self._request("HEAD", temporary_url, retry=True)
+        temporary = self._request("HEAD", temporary_url, retry=True, readiness=True)
         if temporary.status == 200:
             if not self._existing_matches(temporary_url, digest, len(content)):
                 self._put_temporary(temporary_url, content, digest)
@@ -173,7 +182,9 @@ class WebDavClient:
             raise WebDavError("remote file differs from the intended upload")
 
     def _existing_matches(self, url: str, digest: str, expected_size: int) -> bool:
-        response = self._request("GET", url, retry=True, max_body=expected_size + 1)
+        response = self._request(
+            "GET", url, retry=True, readiness=True, max_body=expected_size + 1
+        )
         if response.status != 200:
             raise WebDavError(f"WebDAV verification failed with HTTP {response.status}")
         if len(response.body) != expected_size:
@@ -197,19 +208,36 @@ class WebDavClient:
         body: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         retry: bool,
+        readiness: bool = False,
         max_body: int = 64 * 1024,
     ) -> _Response:
-        attempts = self.retries + 1 if retry else 1
+        if readiness and method not in ("GET", "HEAD"):
+            raise ValueError("readiness retries are limited to GET and HEAD")
+        transient_attempts = self.retries if retry else 0
+        readiness_deadline = self._monotonic() + self.readiness_timeout
+        readiness_attempt = 0
+
+        def pause(delay: float) -> None:
+            if readiness:
+                delay = min(delay, max(0, readiness_deadline - self._monotonic()))
+            self._sleep(delay)
+
         request_headers = {
             "Authorization": self._authorization,
             "User-Agent": "mail-attachment-importer/1",
         }
         if headers:
             request_headers.update(headers)
-        for attempt in range(attempts):
+        while True:
+            request_timeout = self.timeout
+            if readiness:
+                remaining = readiness_deadline - self._monotonic()
+                if remaining <= 0:
+                    raise WebDavError("WebDAV readiness wait expired")
+                request_timeout = min(request_timeout, remaining)
             request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
             try:
-                with self._opener.open(request, timeout=self.timeout) as response:
+                with self._opener.open(request, timeout=request_timeout) as response:
                     response_body = response.read(max_body + 1)
                     if len(response_body) > max_body:
                         raise WebDavError("WebDAV response exceeded the allowed size")
@@ -225,19 +253,32 @@ class WebDavClient:
                 finally:
                     error.close()
             except (TimeoutError, OSError):
-                if attempt + 1 == attempts:
+                if transient_attempts == 0:
                     raise
-                time.sleep(min(0.25 * (2**attempt), 1.0))
+                transient_attempts -= 1
+                pause(min(0.25 * (2 ** (self.retries - transient_attempts - 1)), 1.0))
                 continue
-            if result.status in (429, 502, 503, 504) and attempt + 1 < attempts:
-                time.sleep(min(0.25 * (2**attempt), 1.0))
+            if result.status in (429, 502, 503, 504) and transient_attempts:
+                transient_attempts -= 1
+                pause(min(0.25 * (2 ** (self.retries - transient_attempts - 1)), 1.0))
+                continue
+            if result.status == 425 and readiness:
+                remaining = readiness_deadline - self._monotonic()
+                if remaining <= 0:
+                    return result
+                fallback = min(2**readiness_attempt, 10)
+                hinted = _retry_after_seconds(result.headers)
+                delay = min(max(fallback, hinted if hinted is not None else 0), remaining)
+                self._sleep(delay)
+                readiness_attempt += 1
+                if delay == remaining:
+                    return result
                 continue
             if result.status in (401, 403):
                 raise WebDavAuthenticationError(
                     f"WebDAV authentication failed with HTTP {result.status}"
                 )
             return result
-        raise AssertionError("request attempts exhausted")
 
 
 def _is_collection_response(body: bytes) -> bool:
@@ -276,3 +317,26 @@ def _path_segments(relative_path: str) -> tuple[str, ...]:
 def _temporary_path(relative_path: str, digest: str) -> str:
     segments = _path_segments(relative_path)
     return "/".join((*segments[:-1], f".mail-attachment-importer-{digest}.tmp"))
+
+
+def _retry_after_seconds(headers: Mapping[str, str]) -> float | None:
+    value = next(
+        (header_value for name, header_value in headers.items() if name.casefold() == "retry-after"),
+        None,
+    )
+    if value is None:
+        return None
+    try:
+        seconds = int(value.strip())
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                return None
+            seconds = max(0, int(retry_at.timestamp() - time.time()))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    try:
+        return float(max(0, seconds))
+    except OverflowError:
+        return None
