@@ -10,7 +10,7 @@ See [[file:images/codex/README.md][setup, authentication and lifecycle notes]].
 
 ** mealie-mcp
 MCP server that lets an assistant search, read, create and update Mealie
-recipes. See [[file:images/mealie-mcp/README.md][tools, configuration and safety notes]].
+recipes, and set a recipe's image from a web link. See [[file:images/mealie-mcp/README.md][tools, configuration and safety notes]].
 
 ** rsync
 Example:
