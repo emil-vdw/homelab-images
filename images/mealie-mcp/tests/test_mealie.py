@@ -39,9 +39,11 @@ def recipe(**overrides):
 class FakeMealie:
     """Records requests and answers them like Mealie's API."""
 
-    def __init__(self, stored):
+    def __init__(self, stored, downloads=True):
         self.stored = stored
         self.requests = []
+        self.image = None
+        self.downloads = downloads
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.content else None
@@ -56,6 +58,13 @@ class FakeMealie:
         if request.method == "POST" and path == "/api/recipes":
             self.stored = recipe(slug="new", name=body["name"], recipeIngredient=[], recipeInstructions=[], notes=[])
             return httpx2.Response(201, json="new")
+        if path == f"/api/media/recipes/{self.stored['id']}/images/original.webp":
+            return httpx2.Response(200, content=self.image) if self.image else httpx2.Response(404)
+        if request.method == "POST" and path == f"/api/recipes/{self.stored['slug']}/image":
+            # Like Mealie, answer 200 whether or not the download worked.
+            if self.downloads:
+                self.image = body["url"].encode()
+            return httpx2.Response(200, json={"image": "key"})
         if path == "/api/recipes/timeline/events":
             return httpx2.Response(201, json={})
         if path == f"/api/recipes/{self.stored['slug']}":
@@ -159,6 +168,35 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual(view["slug"], "curry")
         self.assertEqual(fake.calls("POST"), [])
         self.assertEqual(fake.calls("PATCH"), [])
+
+
+class ImageTest(unittest.TestCase):
+    def test_asks_mealie_to_download(self):
+        fake = FakeMealie(recipe())
+        view = client(fake).set_image("curry", " https://cdn.example.com/curry.jpg ")
+        self.assertEqual(fake.calls("POST"), [("/api/recipes/curry/image", {"url": "https://cdn.example.com/curry.jpg"})])
+        self.assertEqual(view["slug"], "curry")
+
+    def test_reports_a_download_mealie_could_not_make(self):
+        with self.assertRaisesRegex(MealieError, "did not change"):
+            client(FakeMealie(recipe(), downloads=False)).set_image("curry", "https://cdn.example.com/x.jpg")
+
+    def test_refuses_internal_urls_without_asking_mealie(self):
+        fake = FakeMealie(recipe())
+        for url in [
+            "http://cdn.example.com/x.jpg",
+            "https://10.0.0.1/x.jpg",
+            "https://[::1]/x.jpg",
+            "https://localhost/x.jpg",
+            "https://recipes.terminus.home.arpa/x.jpg",
+            "https://mealie.mealie.svc.cluster.local/x.jpg",
+            "https://user:pw@cdn.example.com/x.jpg",
+            "file:///etc/passwd",
+            "https://[::1/x.jpg",
+        ]:
+            with self.subTest(url=url), self.assertRaisesRegex(MealieError, "public https link"):
+                client(fake).set_image("curry", url)
+        self.assertEqual(fake.requests, [])
 
 
 class CreateTest(unittest.TestCase):

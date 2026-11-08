@@ -3,14 +3,18 @@
 Recipes are presented as plain text lines so a model can read and rewrite them
 directly. Writes keep Mealie's structured data wherever a line is unchanged,
 and every update first records the previous values on the recipe's timeline,
-so an unwanted edit can be reverted from the Mealie UI. There is deliberately
-no way to delete a recipe.
+so an unwanted edit can be reverted from the Mealie UI. Images are the
+exception: setting one replaces the old image. There is deliberately no way to
+delete a recipe.
 """
 
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import logging
 import re
+import urllib.parse
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from typing import Literal, TypedDict
@@ -26,6 +30,11 @@ _ORDER_BY = {"recently_updated": "updatedAt", "recently_added": "createdAt"}
 # Mealie slugifies names to ASCII. Anything else, such as "../users/self",
 # would let a slug address another API endpoint.
 _SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+# Mealie downloads image URLs itself and refuses hosts that resolve to private
+# addresses. Rejecting internal names here as well keeps an obviously internal
+# URL from reaching it at all.
+_INTERNAL_SUFFIXES = (".arpa", ".local", ".internal", ".localhost", ".lan", ".home")
 
 
 class MealieError(Exception):
@@ -120,6 +129,28 @@ class Mealie:
         logger.info("updating recipe %r: %r", slug, summary)
         return self._apply(current, changes)
 
+    def set_image(self, slug: str, image_url: str) -> Recipe:
+        url = _public_image_url(image_url)
+        current = self._raw(slug)
+        before = self._image_digest(current["id"])
+        # Mealie answers 200 even when it cannot download the image, so compare
+        # the stored image to report what actually happened.
+        self._request("POST", _recipe_path(current["slug"]) + "/image", json={"url": url})
+        if self._image_digest(current["id"]) in (before, None):
+            raise MealieError(
+                "The recipe's image did not change. Mealie could not download a new image from that "
+                "URL; use a direct link to a public JPEG, PNG or WebP file."
+            )
+        logger.info("set image for recipe %r from %r", current["slug"], url)
+        return self._view(current)
+
+    def _image_digest(self, recipe_id: str) -> str | None:
+        try:
+            response = self._http.get(f"/media/recipes/{recipe_id}/images/original.webp")
+        except httpx2.HTTPError as error:
+            raise MealieError(f"Mealie is unreachable: {type(error).__name__}") from error
+        return hashlib.sha256(response.content).hexdigest() if response.status_code == 200 else None
+
     def _apply(self, current: dict, changes: Changes) -> Recipe:
         body: dict[str, object] = {}
         for field, key in _SCALARS.items():
@@ -189,6 +220,32 @@ def _recipe_path(slug: str) -> str:
     if not isinstance(slug, str) or not _SLUG.fullmatch(slug):
         raise MealieError("No such recipe. Search for it to find its slug.")
     return f"/recipes/{slug}"
+
+
+def _public_image_url(url: str) -> str:
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+        host = (parts.hostname or "").rstrip(".").lower()
+    except ValueError:
+        parts, host = None, ""
+    if (
+        parts is None
+        or parts.scheme != "https"
+        or parts.username is not None
+        or "." not in host
+        or _is_address(host)
+        or host.endswith(_INTERNAL_SUFFIXES)
+    ):
+        raise MealieError("Use a public https link to the image, with a domain name rather than an IP address.")
+    return parts.geturl()
+
+
+def _is_address(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _summary(raw: dict) -> RecipeSummary:

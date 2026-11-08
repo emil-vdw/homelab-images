@@ -27,7 +27,9 @@ Find recipes with search_recipes, then read one with get_recipe before changing 
 Ingredients, instructions and notes are lists of plain-text lines, one ingredient
 or step per line. When updating, send the complete new list for any of these you
 change; unchanged lines keep the data Mealie has parsed for them. Recipes cannot
-be deleted. Share the recipe's url with the user after creating or updating it.
+be deleted. To add a photo, find a direct link to an image on the web, such as
+the one on the page the recipe came from, and use set_recipe_image. Share the
+recipe's url with the user after creating or updating it.
 """
 
 Lines = list[str] | None
@@ -112,6 +114,17 @@ def build(mealie: Mealie, allowed_hosts: list[str]) -> Starlette:
             notes=notes,
         )
         return _call(lambda: mealie.update(slug, changes, change_summary))
+
+    @server.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True, openWorldHint=True))
+    def set_recipe_image(
+        slug: str,
+        image_url: Annotated[str, Field(description="Direct https link to a public JPEG, PNG or WebP image")],
+    ) -> Recipe:
+        """Replace a recipe's photo with an image Mealie downloads from the web.
+
+        The previous image is not kept.
+        """
+        return _call(lambda: mealie.set_image(slug, image_url))
 
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_: Request) -> PlainTextResponse:
