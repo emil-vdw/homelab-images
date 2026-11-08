@@ -10,6 +10,7 @@ no way to delete a recipe.
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from typing import Literal, TypedDict
@@ -21,6 +22,10 @@ logger = logging.getLogger(__name__)
 Order = Literal["relevance", "recently_updated", "recently_added"]
 
 _ORDER_BY = {"recently_updated": "updatedAt", "recently_added": "createdAt"}
+
+# Mealie slugifies names to ASCII. Anything else, such as "../users/self",
+# would let a slug address another API endpoint.
+_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 class MealieError(Exception):
@@ -92,7 +97,7 @@ class Mealie:
         if not changes.name:
             raise MealieError("A new recipe needs a name.")
         slug = self._request("POST", "/recipes", json={"name": changes.name}).json()
-        logger.info("created recipe %s", slug)
+        logger.info("created recipe %r", slug)
         return self._apply(self._raw(slug), replace(changes, name=None))
 
     def update(self, slug: str, changes: Changes, summary: str) -> Recipe:
@@ -112,7 +117,7 @@ class Mealie:
                 "eventMessage": snapshot,
             },
         )
-        logger.info("updating recipe %s: %s", slug, summary)
+        logger.info("updating recipe %r: %r", slug, summary)
         return self._apply(current, changes)
 
     def _apply(self, current: dict, changes: Changes) -> Recipe:
@@ -133,10 +138,10 @@ class Mealie:
             body["notes"] = [{"title": "", "text": text} for text in _clean(changes.notes)]
         if not body:
             return self._view(current)
-        return self._view(self._request("PATCH", f"/recipes/{current['slug']}", json=body).json())
+        return self._view(self._request("PATCH", _recipe_path(current["slug"]), json=body).json())
 
     def _raw(self, slug: str) -> dict:
-        return self._request("GET", f"/recipes/{slug}").json()
+        return self._request("GET", _recipe_path(slug)).json()
 
     def _view(self, raw: dict) -> Recipe:
         return {
@@ -178,6 +183,12 @@ _SCALARS = {
     "cook_time": "cookTime",
     "total_time": "totalTime",
 }
+
+
+def _recipe_path(slug: str) -> str:
+    if not isinstance(slug, str) or not _SLUG.fullmatch(slug):
+        raise MealieError("No such recipe. Search for it to find its slug.")
+    return f"/recipes/{slug}"
 
 
 def _summary(raw: dict) -> RecipeSummary:

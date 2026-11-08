@@ -106,6 +106,13 @@ class GetTest(unittest.TestCase):
         with self.assertRaisesRegex(MealieError, "No such recipe"):
             client(FakeMealie(recipe())).get("other")
 
+    def test_slug_cannot_leave_recipes(self):
+        fake = FakeMealie(recipe())
+        for slug in ["../users/self", "a/../../groups/self", "..", "curry?x=1", "Curry", "curry/", ""]:
+            with self.subTest(slug=slug), self.assertRaisesRegex(MealieError, "No such recipe"):
+                client(fake).get(slug)
+        self.assertEqual(fake.requests, [])
+
     def test_rejection_does_not_leak_token(self):
         with self.assertRaises(MealieError) as raised:
             client(FakeMealie(recipe()), token="wrong").get("curry")
